@@ -2,188 +2,255 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<title>Xx21 FIXED (Original Logic + Header)</title>
+<title>ALM Xx21 Unified Audio</title>
 
 <style>
-body { font-family: Arial; padding:20px; }
-button,input { width:100%; margin-top:10px; padding:10px; }
-canvas { margin-top:20px; }
+body{font-family:Arial;background:#0f172a;color:#fff;padding:20px}
+.container{max-width:900px;margin:auto}
+.card{background:#111827;padding:15px;border-radius:12px;margin-bottom:15px}
+button,input{width:100%;margin-top:10px;padding:10px}
+button{background:#0BA37F;color:#fff;border:none;border-radius:8px}
+canvas{width:100%;margin-top:10px;border:1px solid #333}
+#output{background:#000;padding:10px;margin-top:10px}
 </style>
 </head>
 
 <body>
 
-<h2>🎧 صوت → صورة → صوت (نسخة ثابتة)</h2>
+<div class="container">
+
+<div class="card">
+<h3>🎧 تحويل الصوت → صورة</h3>
 
 <input type="file" id="audioInput" accept="audio/*">
-<button onclick="encode()">تحويل إلى صورة</button>
-
-<canvas id="canvas"></canvas>
+<button onclick="encode()">تحويل</button>
 <button onclick="saveImage()">💾 حفظ الصورة</button>
 
-<hr>
+<canvas id="canvas"></canvas>
+</div>
+
+<div class="card">
+<h3>📥 استرجاع من صورة</h3>
 
 <input type="file" id="imageInput" accept="image/png">
-<button onclick="decode()">استعادة الصوت</button>
+<button onclick="decode()">استرجاع الصوت</button>
+
+<div id="output"></div>
+</div>
+
+</div>
 
 <script>
 
-// ================== COMPRESS ==================
+/* =========================
+   CHECKSUM
+========================= */
+function checksum(bytes){
+  let s = 0;
+  for(let b of bytes) s = (s + b) % 1000000007;
+  return s;
+}
+
+/* =========================
+   WRITE IMAGE (ALM)
+========================= */
+function writeImage(bytes, header){
+
+  const size = 512;
+  const canvas = document.getElementById("canvas");
+  canvas.width = size;
+  canvas.height = size;
+
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(size,size);
+  const data = img.data;
+
+  const write = (p,val)=>{
+    const g = 255 - val;
+    const i = p*4;
+    data[i]=data[i+1]=data[i+2]=g;
+    data[i+3]=255;
+  };
+
+  const headerBytes = new TextEncoder().encode(JSON.stringify(header));
+  const headerSize = headerBytes.length;
+
+  write(0,(headerSize>>24)&255);
+  write(1,(headerSize>>16)&255);
+  write(2,(headerSize>>8)&255);
+  write(3,headerSize&255);
+
+  for(let i=0;i<headerBytes.length;i++){
+    write(4+i,headerBytes[i]);
+  }
+
+  const offset = 4096;
+
+  for(let i=0;i<bytes.length;i++){
+    write(offset+i,bytes[i]);
+  }
+
+  ctx.putImageData(img,0,0);
+}
+
+/* =========================
+   COMPRESS AUDIO
+========================= */
 async function compressAudio(file){
 
-const audioCtx = new AudioContext();
-const arrayBuffer = await file.arrayBuffer();
-const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+  const ctx = new AudioContext();
+  const buf = await ctx.decodeAudioData(await file.arrayBuffer());
 
-const sampleRate = 8000;
+  const sampleRate = 8000;
 
-const offlineCtx = new OfflineAudioContext(
-1,
-audioBuffer.duration * sampleRate,
-sampleRate
-);
+  const offline = new OfflineAudioContext(1, buf.duration*sampleRate, sampleRate);
 
-const source = offlineCtx.createBufferSource();
-source.buffer = audioBuffer;
-source.connect(offlineCtx.destination);
-source.start();
+  const src = offline.createBufferSource();
+  src.buffer = buf;
+  src.connect(offline.destination);
+  src.start();
 
-const rendered = await offlineCtx.startRendering();
+  const rendered = await offline.startRendering();
 
-return bufferToWav(rendered);
+  return bufferToWav(rendered);
 }
 
-// ================== WAV ==================
+/* =========================
+   WAV
+========================= */
 function bufferToWav(buffer){
 
-const length = buffer.length * 2 + 44;
-const bufferArray = new ArrayBuffer(length);
-const view = new DataView(bufferArray);
+  const length = buffer.length*2+44;
+  const arr = new ArrayBuffer(length);
+  const view = new DataView(arr);
 
-let offset = 0;
+  let offset=0;
 
-function writeString(s){
-for(let i=0;i<s.length;i++) view.setUint8(offset++, s.charCodeAt(i));
+  function writeString(s){
+    for(let i=0;i<s.length;i++) view.setUint8(offset++,s.charCodeAt(i));
+  }
+
+  writeString("RIFF");
+  view.setUint32(offset,36+buffer.length*2,true); offset+=4;
+  writeString("WAVEfmt ");
+  view.setUint32(offset,16,true); offset+=4;
+  view.setUint16(offset,1,true); offset+=2;
+  view.setUint16(offset,1,true); offset+=2;
+  view.setUint32(offset,buffer.sampleRate,true); offset+=4;
+  view.setUint32(offset,buffer.sampleRate*2,true); offset+=4;
+  view.setUint16(offset,2,true); offset+=2;
+  view.setUint16(offset,16,true); offset+=2;
+  writeString("data");
+  view.setUint32(offset,buffer.length*2,true); offset+=4;
+
+  const ch = buffer.getChannelData(0);
+
+  for(let i=0;i<ch.length;i++){
+    let s=Math.max(-1,Math.min(1,ch[i]));
+    view.setInt16(offset,s<0?s*0x8000:s*0x7FFF,true);
+    offset+=2;
+  }
+
+  return new Uint8Array(arr);
 }
 
-writeString("RIFF");
-view.setUint32(offset, 36 + buffer.length * 2, true); offset+=4;
-writeString("WAVE");
-writeString("fmt ");
-view.setUint32(offset, 16, true); offset+=4;
-view.setUint16(offset, 1, true); offset+=2;
-view.setUint16(offset, 1, true); offset+=2;
-view.setUint32(offset, buffer.sampleRate, true); offset+=4;
-view.setUint32(offset, buffer.sampleRate * 2, true); offset+=4;
-view.setUint16(offset, 2, true); offset+=2;
-view.setUint16(offset, 16, true); offset+=2;
-writeString("data");
-view.setUint32(offset, buffer.length * 2, true); offset+=4;
-
-const channel = buffer.getChannelData(0);
-for(let i=0;i<channel.length;i++){
-let s = Math.max(-1, Math.min(1, channel[i]));
-view.setInt16(offset, s<0 ? s*0x8000 : s*0x7FFF, true);
-offset+=2;
-}
-
-return new Uint8Array(bufferArray);
-}
-
-// ================== ENCODE ==================
+/* =========================
+   ENCODE
+========================= */
 async function encode(){
 
-const file = document.getElementById("audioInput").files[0];
-if(!file) return alert("اختر صوت");
+  const file = document.getElementById("audioInput").files[0];
+  if(!file) return alert("اختر صوت");
 
-const wav = await compressAudio(file);
+  const wav = await compressAudio(file);
 
-// 🔥 نضيف طول البيانات في البداية
-const full = new Uint8Array(wav.length + 4);
+  const header = {
+    magic:"ALM1",
+    type:"audio",
+    length:wav.length,
+    checksum:checksum(wav),
+    sampleRate:8000,
+    payload_offset:4096
+  };
 
-full[0] = (wav.length >> 24) & 255;
-full[1] = (wav.length >> 16) & 255;
-full[2] = (wav.length >> 8) & 255;
-full[3] = wav.length & 255;
+  writeImage(wav,header);
 
-full.set(wav, 4);
-
-// حجم الصورة
-const size = Math.ceil(Math.sqrt(full.length));
-
-const canvas = document.getElementById("canvas");
-canvas.width = size;
-canvas.height = size;
-
-const ctx = canvas.getContext("2d");
-const img = ctx.createImageData(size,size);
-
-for(let i=0;i<full.length;i++){
-const v = full[i];
-img.data[i*4]=v;
-img.data[i*4+1]=v;
-img.data[i*4+2]=v;
-img.data[i*4+3]=255;
+  alert("✔ تم تحويل الصوت إلى صورة");
 }
 
-ctx.putImageData(img,0,0);
-
-alert("✔ تم التحويل بنجاح");
-}
-
-// ================== SAVE ==================
+/* =========================
+   SAVE
+========================= */
 function saveImage(){
-const canvas=document.getElementById("canvas");
-const a=document.createElement("a");
-a.href=canvas.toDataURL("image/png");
-a.download="audio.png";
-a.click();
+  const canvas=document.getElementById("canvas");
+  const a=document.createElement("a");
+  a.href=canvas.toDataURL("image/png");
+  a.download="alm-audio.png";
+  a.click();
 }
 
-// ================== DECODE ==================
+/* =========================
+   DECODE
+========================= */
 function decode(){
 
-const file=document.getElementById("imageInput").files[0];
-if(!file) return;
+  const file=document.getElementById("imageInput").files[0];
+  if(!file) return alert("اختر صورة");
 
-const img=new Image();
+  const img=new Image();
 
-img.onload=()=>{
+  img.onload=()=>{
 
-const canvas=document.getElementById("canvas");
-const ctx=canvas.getContext("2d");
+    const canvas=document.getElementById("canvas");
+    const ctx=canvas.getContext("2d");
 
-canvas.width=img.width;
-canvas.height=img.height;
-ctx.drawImage(img,0,0);
+    canvas.width=img.width;
+    canvas.height=img.height;
+    ctx.drawImage(img,0,0);
 
-const data=ctx.getImageData(0,0,canvas.width,canvas.height).data;
+    const data=ctx.getImageData(0,0,canvas.width,canvas.height).data;
 
-// 🔥 قراءة الطول
-const len =
-(data[0]<<24) |
-(data[4]<<16) |
-(data[8]<<8) |
-(data[12]);
+    const read=(p)=>255-data[p*4];
 
-const bytes=[];
+    const headerSize=
+      (read(0)<<24)|(read(1)<<16)|(read(2)<<8)|read(3);
 
-for(let i=4;i<len+4;i++){
-bytes.push(data[i*4]);
-}
+    let str="";
+    for(let i=0;i<headerSize;i++){
+      str+=String.fromCharCode(read(4+i));
+    }
 
-const blob=new Blob([new Uint8Array(bytes)],{type:"audio/wav"});
+    const header=JSON.parse(str);
 
-const a=document.createElement("a");
-a.href=URL.createObjectURL(blob);
-a.download="decoded.wav";
-a.click();
+    const bytes=[];
+    const offset=header.payload_offset;
 
-alert("✔ تم استرجاع الصوت");
+    for(let i=0;i<header.length;i++){
+      bytes.push(read(offset+i));
+    }
 
-};
+    if(checksum(bytes)!==header.checksum){
+      alert("⚠️ البيانات تالفة");
+      return;
+    }
 
-img.src=URL.createObjectURL(file);
+    const blob=new Blob([new Uint8Array(bytes)],{type:"audio/wav"});
+
+    const url=URL.createObjectURL(blob);
+
+    const audio=document.createElement("audio");
+    audio.controls=true;
+    audio.src=url;
+
+    const out=document.getElementById("output");
+    out.innerHTML="";
+    out.appendChild(audio);
+
+    alert("✔ تم استرجاع الصوت");
+
+  };
+
+  img.src=URL.createObjectURL(file);
 }
 
 </script>

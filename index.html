@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>Audio Compress → Image → Audio</title>
+
+<style>
+body { font-family: Arial; padding:20px; }
+button,input { width:100%; margin-top:10px; padding:10px; }
+canvas { margin-top:20px; }
+</style>
+</head>
+
+<body>
+
+<h2>ضغط الصوت → صورة → استرجاع</h2>
+
+<input type="file" id="audioInput" accept="audio/*">
+<button onclick="encode()">تحويل إلى صورة</button>
+
+<canvas id="canvas"></canvas>
+<button onclick="saveImage()">💾 حفظ الصورة</button>
+
+<hr>
+
+<input type="file" id="imageInput" accept="image/png">
+<button onclick="decode()">استعادة الصوت</button>
+
+<script>
+// ================== COMPRESS AUDIO ==================
+async function compressAudio(file){
+
+const audioCtx = new AudioContext();
+const arrayBuffer = await file.arrayBuffer();
+const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+// تقليل الجودة
+const sampleRate = 8000; // ↓ جودة منخفضة
+const offlineCtx = new OfflineAudioContext(
+1, // mono
+audioBuffer.duration * sampleRate,
+sampleRate
+);
+
+const source = offlineCtx.createBufferSource();
+source.buffer = audioBuffer;
+source.connect(offlineCtx.destination);
+source.start();
+
+const rendered = await offlineCtx.startRendering();
+
+// تحويل إلى WAV
+return bufferToWav(rendered);
+}
+
+// ================== WAV ENCODER ==================
+function bufferToWav(buffer){
+const numOfChan = buffer.numberOfChannels;
+const length = buffer.length * numOfChan * 2 + 44;
+const bufferArray = new ArrayBuffer(length);
+const view = new DataView(bufferArray);
+
+let offset = 0;
+
+// header WAV
+function writeString(s){
+for(let i=0;i<s.length;i++) view.setUint8(offset++, s.charCodeAt(i));
+}
+
+writeString("RIFF");
+view.setUint32(offset, 36 + buffer.length * 2, true); offset+=4;
+writeString("WAVE");
+writeString("fmt ");
+view.setUint32(offset, 16, true); offset+=4;
+view.setUint16(offset, 1, true); offset+=2;
+view.setUint16(offset, numOfChan, true); offset+=2;
+view.setUint32(offset, buffer.sampleRate, true); offset+=4;
+view.setUint32(offset, buffer.sampleRate * 2, true); offset+=4;
+view.setUint16(offset, 2, true); offset+=2;
+view.setUint16(offset, 16, true); offset+=2;
+writeString("data");
+view.setUint32(offset, buffer.length * 2, true); offset+=4;
+
+// PCM
+const channel = buffer.getChannelData(0);
+for(let i=0;i<channel.length;i++){
+let s = Math.max(-1, Math.min(1, channel[i]));
+view.setInt16(offset, s<0 ? s*0x8000 : s*0x7FFF, true);
+offset+=2;
+}
+
+return new Uint8Array(bufferArray);
+}
+
+// ================== ENCODE ==================
+async function encode(){
+
+const file = document.getElementById("audioInput").files[0];
+if(!file) return alert("اختر صوت");
+
+const wav = await compressAudio(file);
+
+// حجم الصورة
+const size = Math.ceil(Math.sqrt(wav.length));
+const canvas = document.getElementById("canvas");
+canvas.width = size;
+canvas.height = size;
+
+const ctx = canvas.getContext("2d");
+const img = ctx.createImageData(size,size);
+
+for(let i=0;i<wav.length;i++){
+const v = wav[i];
+img.data[i*4]=v;
+img.data[i*4+1]=v;
+img.data[i*4+2]=v;
+img.data[i*4+3]=255;
+}
+
+ctx.putImageData(img,0,0);
+
+alert("تم التحويل مع ضغط الصوت");
+}
+
+// ================== SAVE ==================
+function saveImage(){
+const canvas=document.getElementById("canvas");
+const a=document.createElement("a");
+a.href=canvas.toDataURL("image/png");
+a.download="audio.png";
+a.click();
+}
+
+// ================== DECODE ==================
+function decode(){
+
+const file=document.getElementById("imageInput").files[0];
+if(!file) return;
+
+const img=new Image();
+img.onload=()=>{
+const canvas=document.getElementById("canvas");
+const ctx=canvas.getContext("2d");
+
+canvas.width=img.width;
+canvas.height=img.height;
+ctx.drawImage(img,0,0);
+
+const data=ctx.getImageData(0,0,canvas.width,canvas.height).data;
+
+const bytes=[];
+for(let i=0;i<data.length;i+=4){
+bytes.push(data[i]);
+}
+
+const blob=new Blob([new Uint8Array(bytes)],{type:"audio/wav"});
+
+const a=document.createElement("a");
+a.href=URL.createObjectURL(blob);
+a.download="decoded.wav";
+a.click();
+
+alert("تم استرجاع الصوت");
+};
+
+img.src=URL.createObjectURL(file);
+}
+</script>
+
+</body>
+</html>

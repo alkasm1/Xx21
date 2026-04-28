@@ -2,7 +2,7 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<title>Xx21 Audio System</title>
+<title>Xx21 Audio → Image → Audio (Fixed)</title>
 
 <style>
 body{
@@ -36,20 +36,184 @@ canvas{
 
 <div class="card">
 
-<h2>🎧 Xx21 Audio → Image System</h2>
+<h2>🎧 Xx21 Audio Transport System</h2>
 
 <input type="file" id="audioInput" accept="audio/*">
 
 <button onclick="encodeAudio()">تحويل الصوت إلى صورة</button>
-<button onclick="saveImage()">حفظ الصورة</button>
 <button onclick="decodeAudio()">استرجاع الصوت</button>
 
 <canvas id="canvas"></canvas>
 
 </div>
 
-<script src="alm_core.js"></script>
-<script src="xx21_audio.js"></script>
+<script>
+
+/* =========================
+   ALM CORE (داخل الملف للتجربة)
+========================= */
+const ALM_CORE = {
+
+  audio: {
+
+    // تحويل الصوت إلى PCM bytes
+    async fileToPCM(file){
+
+      const ctx = new AudioContext();
+      const buf = await file.arrayBuffer();
+      const audio = await ctx.decodeAudioData(buf);
+
+      const offline = new OfflineAudioContext(
+        1,
+        audio.length,
+        audio.sampleRate
+      );
+
+      const src = offline.createBufferSource();
+      src.buffer = audio;
+      src.connect(offline.destination);
+      src.start();
+
+      const rendered = await offline.startRendering();
+
+      const ch = rendered.getChannelData(0);
+
+      const bytes = new Uint8Array(ch.length * 2);
+
+      let j = 0;
+
+      for (let i = 0; i < ch.length; i++) {
+
+        let s = Math.max(-1, Math.min(1, ch[i]));
+        let v = s < 0 ? s * 0x8000 : s * 0x7FFF;
+
+        bytes[j++] = v & 255;
+        bytes[j++] = (v >> 8) & 255;
+      }
+
+      return {
+        bytes,
+        sampleRate: rendered.sampleRate
+      };
+    },
+
+    // إعادة بناء WAV من PCM
+    pcmToAudio(bytes, sampleRate){
+
+      const buffer = new ArrayBuffer(44 + bytes.length);
+      const view = new DataView(buffer);
+
+      let o = 0;
+
+      const write = (s) => {
+        for (let i = 0; i < s.length; i++) {
+          view.setUint8(o++, s.charCodeAt(i));
+        }
+      };
+
+      write("RIFF");
+      view.setUint32(o, 36 + bytes.length, true); o += 4;
+      write("WAVE");
+      write("fmt ");
+      view.setUint32(o, 16, true); o += 4;
+      view.setUint16(o, 1, true); o += 2;
+      view.setUint16(o, 1, true); o += 2;
+      view.setUint32(o, sampleRate, true); o += 4;
+      view.setUint32(o, sampleRate * 2, true); o += 4;
+      view.setUint16(o, 2, true); o += 2;
+      view.setUint16(o, 16, true); o += 2;
+      write("data");
+      view.setUint32(o, bytes.length, true); o += 4;
+
+      for (let i = 0; i < bytes.length; i += 2) {
+        let v = bytes[i] | (bytes[i + 1] << 8);
+        view.setInt16(o, v, true);
+        o += 2;
+      }
+
+      return URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
+    }
+  }
+};
+
+
+/* =========================
+   GLOBAL STATE
+========================= */
+let meta = {
+  sampleRate: 8000,
+  length: 0
+};
+
+
+/* =========================
+   ENCODE AUDIO → IMAGE
+========================= */
+async function encodeAudio(){
+
+  const file = document.getElementById("audioInput").files[0];
+  if (!file) return alert("اختر ملف صوت");
+
+  const result = await ALM_CORE.audio.fileToPCM(file);
+
+  const bytes = result.bytes;
+  meta.sampleRate = result.sampleRate;
+  meta.length = bytes.length;
+
+  const size = Math.ceil(Math.sqrt(bytes.length / 4));
+
+  const canvas = document.getElementById("canvas");
+  canvas.width = size;
+  canvas.height = size;
+
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(size, size);
+
+  for (let i = 0; i < bytes.length; i++) {
+    img.data[i * 4] = bytes[i];
+    img.data[i * 4 + 1] = bytes[i];
+    img.data[i * 4 + 2] = bytes[i];
+    img.data[i * 4 + 3] = 255;
+  }
+
+  ctx.putImageData(img, 0, 0);
+
+  alert("✔ تم تحويل الصوت إلى صورة بنجاح");
+}
+
+
+/* =========================
+   DECODE IMAGE → AUDIO
+========================= */
+function decodeAudio(){
+
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d");
+
+  const data = ctx.getImageData(
+    0, 0,
+    canvas.width,
+    canvas.height
+  ).data;
+
+  const bytes = [];
+
+  for (let i = 0; i < data.length; i += 4) {
+    bytes.push(data[i]);
+  }
+
+  const audioURL = ALM_CORE.audio.pcmToAudio(
+    new Uint8Array(bytes),
+    meta.sampleRate
+  );
+
+  const audio = new Audio(audioURL);
+  audio.play();
+
+  alert("✔ تم استرجاع وتشغيل الصوت");
+}
+
+</script>
 
 </body>
 </html>

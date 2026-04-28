@@ -2,168 +2,317 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<title>Audio Compress → Image → Audio</title>
+<title>ALM Xx21 - Audio Image Encoder</title>
 
 <style>
-body { font-family: Arial; padding:20px; }
-button,input { width:100%; margin-top:10px; padding:10px; }
-canvas { margin-top:20px; }
+:root {
+  --main:#0BA37F;
+  --bg:#0d1117;
+  --card:#161b22;
+  --text:#e6edf3;
+  --border:#30363d;
+}
+
+body {
+  font-family: "Cairo", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  margin:0;
+}
+
+/* HEADER */
+header {
+  background: var(--main);
+  padding: 15px;
+  text-align:center;
+  font-size:20px;
+  font-weight:bold;
+}
+
+/* LAYOUT */
+.container {
+  max-width:900px;
+  margin:auto;
+  padding:20px;
+}
+
+.card {
+  background: var(--card);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:15px;
+  margin-bottom:15px;
+}
+
+/* INPUTS */
+input, button {
+  width:100%;
+  padding:12px;
+  margin-top:8px;
+  border-radius:8px;
+  border:1px solid var(--border);
+  background:#0d1117;
+  color:var(--text);
+}
+
+button {
+  background: var(--main);
+  border:none;
+  cursor:pointer;
+}
+
+button:hover {
+  background:#0a8c6c;
+}
+
+/* STATUS */
+#status {
+  margin-top:10px;
+  font-size:14px;
+  color:#58a6ff;
+}
+
+/* CANVAS */
+canvas {
+  width:100%;
+  margin-top:10px;
+  border-radius:10px;
+  border:1px solid var(--border);
+}
+
+/* PROGRESS */
+.progress {
+  height:6px;
+  background:#222;
+  border-radius:6px;
+  overflow:hidden;
+  margin-top:10px;
+}
+
+.progress div {
+  height:100%;
+  background:var(--main);
+  width:0%;
+}
+
+/* GRID */
+.row {
+  display:grid;
+  grid-template-columns:1fr;
+  gap:15px;
+}
+
+@media(min-width:700px){
+  .row{
+    grid-template-columns:1fr 1fr;
+  }
+}
 </style>
 </head>
 
 <body>
 
-<h2>ضغط الصوت → صورة → استرجاع</h2>
+<header>🎧 ALM Xx21 - Audio → Image Runtime</header>
+
+<div class="container">
+
+<div class="row">
+
+<!-- ENCODE -->
+<div class="card">
+<h3>📤 تحويل الصوت إلى صورة</h3>
 
 <input type="file" id="audioInput" accept="audio/*">
-<button onclick="encode()">تحويل إلى صورة</button>
 
-<canvas id="canvas"></canvas>
+<button onclick="encode()">تحويل</button>
+
+<div class="progress"><div id="progressBar"></div></div>
+
 <button onclick="saveImage()">💾 حفظ الصورة</button>
 
-<hr>
+<div id="status"></div>
+</div>
+
+<!-- DECODE -->
+<div class="card">
+<h3>📥 استعادة الصوت من صورة</h3>
 
 <input type="file" id="imageInput" accept="image/png">
+
 <button onclick="decode()">استعادة الصوت</button>
 
+<button onclick="playAudio()">▶ تشغيل الصوت</button>
+
+</div>
+
+</div>
+
+<!-- CANVAS -->
+<div class="card">
+<h3>🖼️ الصورة الناتجة</h3>
+<canvas id="canvas"></canvas>
+</div>
+
+</div>
+
+<script src="alm_core.js"></script>
+
 <script>
-// ================== COMPRESS AUDIO ==================
+let decodedAudioBlob = null;
+
+/* STATUS */
+function setStatus(msg){
+  document.getElementById("status").textContent = msg;
+}
+
+/* PROGRESS */
+function setProgress(p){
+  document.getElementById("progressBar").style.width = p+"%";
+}
+
+/* ================= AUDIO ================= */
 async function compressAudio(file){
 
-const audioCtx = new AudioContext();
-const arrayBuffer = await file.arrayBuffer();
-const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+  setStatus("⏳ معالجة الصوت...");
+  setProgress(10);
 
-// تقليل الجودة
-const sampleRate = 8000; // ↓ جودة منخفضة
-const offlineCtx = new OfflineAudioContext(
-1, // mono
-audioBuffer.duration * sampleRate,
-sampleRate
-);
+  const audioCtx = new AudioContext();
+  const buffer = await file.arrayBuffer();
+  const audio = await audioCtx.decodeAudioData(buffer);
 
-const source = offlineCtx.createBufferSource();
-source.buffer = audioBuffer;
-source.connect(offlineCtx.destination);
-source.start();
+  const sampleRate = 8000;
 
-const rendered = await offlineCtx.startRendering();
+  const offline = new OfflineAudioContext(
+    1,
+    audio.duration * sampleRate,
+    sampleRate
+  );
 
-// تحويل إلى WAV
-return bufferToWav(rendered);
+  const src = offline.createBufferSource();
+  src.buffer = audio;
+  src.connect(offline.destination);
+  src.start();
+
+  const rendered = await offline.startRendering();
+
+  setProgress(40);
+
+  return bufferToWav(rendered);
 }
 
-// ================== WAV ENCODER ==================
+/* WAV */
 function bufferToWav(buffer){
-const numOfChan = buffer.numberOfChannels;
-const length = buffer.length * numOfChan * 2 + 44;
-const bufferArray = new ArrayBuffer(length);
-const view = new DataView(bufferArray);
 
-let offset = 0;
+  const length = buffer.length * 2 + 44;
+  const arr = new ArrayBuffer(length);
+  const view = new DataView(arr);
 
-// header WAV
-function writeString(s){
-for(let i=0;i<s.length;i++) view.setUint8(offset++, s.charCodeAt(i));
+  let offset = 0;
+
+  const write = s=>{
+    for(let i=0;i<s.length;i++) view.setUint8(offset++, s.charCodeAt(i));
+  };
+
+  write("RIFF");
+  view.setUint32(offset, 36 + buffer.length * 2, true); offset+=4;
+  write("WAVEfmt ");
+  view.setUint32(offset, 16, true); offset+=4;
+  view.setUint16(offset, 1, true); offset+=2;
+  view.setUint16(offset, 1, true); offset+=2;
+  view.setUint32(offset, buffer.sampleRate, true); offset+=4;
+  view.setUint32(offset, buffer.sampleRate * 2, true); offset+=4;
+  view.setUint16(offset, 2, true); offset+=2;
+  view.setUint16(offset, 16, true); offset+=2;
+  write("data");
+  view.setUint32(offset, buffer.length * 2, true); offset+=4;
+
+  const ch = buffer.getChannelData(0);
+
+  for(let i=0;i<ch.length;i++){
+    let s = Math.max(-1, Math.min(1, ch[i]));
+    view.setInt16(offset, s<0 ? s*0x8000 : s*0x7FFF, true);
+    offset+=2;
+  }
+
+  return new Uint8Array(arr);
 }
 
-writeString("RIFF");
-view.setUint32(offset, 36 + buffer.length * 2, true); offset+=4;
-writeString("WAVE");
-writeString("fmt ");
-view.setUint32(offset, 16, true); offset+=4;
-view.setUint16(offset, 1, true); offset+=2;
-view.setUint16(offset, numOfChan, true); offset+=2;
-view.setUint32(offset, buffer.sampleRate, true); offset+=4;
-view.setUint32(offset, buffer.sampleRate * 2, true); offset+=4;
-view.setUint16(offset, 2, true); offset+=2;
-view.setUint16(offset, 16, true); offset+=2;
-writeString("data");
-view.setUint32(offset, buffer.length * 2, true); offset+=4;
-
-// PCM
-const channel = buffer.getChannelData(0);
-for(let i=0;i<channel.length;i++){
-let s = Math.max(-1, Math.min(1, channel[i]));
-view.setInt16(offset, s<0 ? s*0x8000 : s*0x7FFF, true);
-offset+=2;
-}
-
-return new Uint8Array(bufferArray);
-}
-
-// ================== ENCODE ==================
+/* ================= ENCODE ================= */
 async function encode(){
 
-const file = document.getElementById("audioInput").files[0];
-if(!file) return alert("اختر صوت");
+  const file = document.getElementById("audioInput").files[0];
+  if(!file) return alert("اختر صوت");
 
-const wav = await compressAudio(file);
+  const wav = await compressAudio(file);
 
-// حجم الصورة
-const size = Math.ceil(Math.sqrt(wav.length));
-const canvas = document.getElementById("canvas");
-canvas.width = size;
-canvas.height = size;
+  setProgress(60);
 
-const ctx = canvas.getContext("2d");
-const img = ctx.createImageData(size,size);
+  const canvas = document.getElementById("canvas");
 
-for(let i=0;i<wav.length;i++){
-const v = wav[i];
-img.data[i*4]=v;
-img.data[i*4+1]=v;
-img.data[i*4+2]=v;
-img.data[i*4+3]=255;
+  const header = ALM.createHeader("audio","wav",wav,{
+    sample_rate:8000
+  });
+
+  ALM.writeImage(canvas, wav, header);
+
+  setProgress(100);
+  setStatus("✔ تم التحويل بنجاح");
 }
 
-ctx.putImageData(img,0,0);
-
-alert("تم التحويل مع ضغط الصوت");
-}
-
-// ================== SAVE ==================
+/* SAVE */
 function saveImage(){
-const canvas=document.getElementById("canvas");
-const a=document.createElement("a");
-a.href=canvas.toDataURL("image/png");
-a.download="audio.png";
-a.click();
+  const canvas=document.getElementById("canvas");
+  if(!canvas.width) return alert("لا توجد صورة");
+
+  const a=document.createElement("a");
+  a.href=canvas.toDataURL("image/png");
+  a.download="alm-audio.png";
+  a.click();
 }
 
-// ================== DECODE ==================
+/* ================= DECODE ================= */
 function decode(){
 
-const file=document.getElementById("imageInput").files[0];
-if(!file) return;
+  const file=document.getElementById("imageInput").files[0];
+  if(!file) return;
 
-const img=new Image();
-img.onload=()=>{
-const canvas=document.getElementById("canvas");
-const ctx=canvas.getContext("2d");
+  const img=new Image();
 
-canvas.width=img.width;
-canvas.height=img.height;
-ctx.drawImage(img,0,0);
+  img.onload=()=>{
+    const canvas=document.getElementById("canvas");
+    const ctx=canvas.getContext("2d");
 
-const data=ctx.getImageData(0,0,canvas.width,canvas.height).data;
+    canvas.width=img.width;
+    canvas.height=img.height;
+    ctx.drawImage(img,0,0);
 
-const bytes=[];
-for(let i=0;i<data.length;i+=4){
-bytes.push(data[i]);
+    try{
+      const {header, bytes} = ALM.readImage(canvas);
+
+      if(header.type !== "audio"){
+        alert("هذه ليست بيانات صوت");
+        return;
+      }
+
+      decodedAudioBlob = new Blob([bytes],{type:"audio/wav"});
+
+      setStatus("✔ تم استرجاع الصوت");
+
+    }catch(e){
+      alert(e.message);
+    }
+  };
+
+  img.src=URL.createObjectURL(file);
 }
 
-const blob=new Blob([new Uint8Array(bytes)],{type:"audio/wav"});
+/* PLAY */
+function playAudio(){
+  if(!decodedAudioBlob) return alert("لا يوجد صوت");
 
-const a=document.createElement("a");
-a.href=URL.createObjectURL(blob);
-a.download="decoded.wav";
-a.click();
-
-alert("تم استرجاع الصوت");
-};
-
-img.src=URL.createObjectURL(file);
+  const url = URL.createObjectURL(decodedAudioBlob);
+  const audio = new Audio(url);
+  audio.play();
 }
 </script>
 

@@ -2,221 +2,87 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<title>Xx21 Audio System FULL</title>
+<title>Xx21 FIXED AUDIO SYSTEM</title>
 
 <style>
-body{
-  font-family: Arial;
-  background:#0f172a;
-  color:white;
-  padding:20px;
-}
-
-.card{
-  background:#111827;
-  padding:16px;
-  border-radius:12px;
-  max-width:800px;
-  margin:auto;
-}
-
-button,input{
-  width:100%;
-  margin-top:10px;
-  padding:10px;
-  border-radius:8px;
-  border:none;
-}
-
-button{
-  background:#0BA37F;
-  color:white;
-  cursor:pointer;
-}
-
-button:hover{
-  background:#0a8c6c;
-}
-
-canvas{
-  margin-top:15px;
-  width:100%;
-  border:1px solid #333;
-}
-
-.small{
-  margin-top:10px;
-  font-size:14px;
-  color:#aaa;
-}
+body{font-family:Arial;background:#0f172a;color:#fff;padding:20px}
+.card{background:#111827;padding:15px;border-radius:12px;max-width:800px;margin:auto}
+button,input{width:100%;margin-top:10px;padding:10px}
+button{background:#0BA37F;color:#fff;border:none;border-radius:8px}
+canvas{margin-top:15px;width:100%;border:1px solid #333}
 </style>
 </head>
 
 <body>
 
 <div class="card">
+<h2>🎧 Xx21 FIXED (Lossless PCM Image Transport)</h2>
 
-<h2>🎧 Xx21 Audio → Image → Audio</h2>
-
-<!-- اختيار الصوت -->
 <input type="file" id="audioInput" accept="audio/*">
+<button onclick="encode()">تحويل الصوت → صورة</button>
 
-<button onclick="encodeAudio()">🔄 تحويل الصوت إلى صورة</button>
-
-<button onclick="saveImage()">💾 حفظ الصورة</button>
+<button onclick="saveImage()">حفظ الصورة</button>
 
 <hr>
 
-<!-- اختيار الصورة -->
 <input type="file" id="imageInput" accept="image/png">
-
-<button onclick="loadImage()">📥 تحميل الصورة إلى النظام</button>
-
-<button onclick="decodeAudio()">▶ استرجاع وتشغيل الصوت</button>
+<button onclick="loadImage()">تحميل صورة</button>
+<button onclick="decode()">استرجاع الصوت</button>
 
 <canvas id="canvas"></canvas>
-
-<div class="small" id="status">جاهز</div>
-
 </div>
 
 <script>
 
 /* =========================
-   ALM CORE (مضمن)
+   PCM ENCODE (FIXED)
 ========================= */
-const ALM_CORE = {
-
-  audio: {
-
-    async fileToPCM(file){
-
-      const ctx = new AudioContext();
-      const buf = await file.arrayBuffer();
-      const audio = await ctx.decodeAudioData(buf);
-
-      const offline = new OfflineAudioContext(
-        1,
-        audio.length,
-        audio.sampleRate
-      );
-
-      const src = offline.createBufferSource();
-      src.buffer = audio;
-      src.connect(offline.destination);
-      src.start();
-
-      const rendered = await offline.startRendering();
-
-      const ch = rendered.getChannelData(0);
-
-      const bytes = new Uint8Array(ch.length * 2);
-
-      let j = 0;
-
-      for (let i = 0; i < ch.length; i++) {
-
-        let s = Math.max(-1, Math.min(1, ch[i]));
-        let v = s < 0 ? s * 0x8000 : s * 0x7FFF;
-
-        bytes[j++] = v & 255;
-        bytes[j++] = (v >> 8) & 255;
-      }
-
-      return {
-        bytes,
-        sampleRate: rendered.sampleRate
-      };
-    },
-
-    pcmToAudio(bytes, sampleRate){
-
-      const buffer = new ArrayBuffer(44 + bytes.length);
-      const view = new DataView(buffer);
-
-      let o = 0;
-
-      const write = (s) => {
-        for (let i = 0; i < s.length; i++) {
-          view.setUint8(o++, s.charCodeAt(i));
-        }
-      };
-
-      write("RIFF");
-      view.setUint32(o, 36 + bytes.length, true); o += 4;
-      write("WAVE");
-      write("fmt ");
-      view.setUint32(o, 16, true); o += 4;
-      view.setUint16(o, 1, true); o += 2;
-      view.setUint16(o, 1, true); o += 2;
-      view.setUint32(o, sampleRate, true); o += 4;
-      view.setUint32(o, sampleRate * 2, true); o += 4;
-      view.setUint16(o, 2, true); o += 2;
-      view.setUint16(o, 16, true); o += 2;
-      write("data");
-      view.setUint32(o, bytes.length, true); o += 4;
-
-      for (let i = 0; i < bytes.length; i += 2) {
-        let v = bytes[i] | (bytes[i + 1] << 8);
-        view.setInt16(o, v, true);
-        o += 2;
-      }
-
-      return URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
-    }
-  }
-};
-
-
-/* =========================
-   STATE
-========================= */
-let meta = {
-  sampleRate: 8000,
-  bytes: null
-};
-
-let lastCanvas = null;
-
-
-/* =========================
-   ENCODE AUDIO → IMAGE
-========================= */
-async function encodeAudio(){
+async function encode(){
 
   const file = document.getElementById("audioInput").files[0];
-  if (!file) return alert("اختر ملف صوت");
+  if(!file) return alert("اختر صوت");
 
-  setStatus("⏳ جاري التحويل...");
+  const ctx = new AudioContext();
+  const buf = await ctx.decodeAudioData(await file.arrayBuffer());
 
-  const result = await ALM_CORE.audio.fileToPCM(file);
+  const offline = new OfflineAudioContext(1, buf.length, buf.sampleRate);
 
-  meta.sampleRate = result.sampleRate;
-  meta.bytes = result.bytes;
+  const src = offline.createBufferSource();
+  src.buffer = buf;
+  src.connect(offline.destination);
+  src.start();
 
-  const bytes = result.bytes;
+  const rendered = await offline.startRendering();
 
-  const size = Math.ceil(Math.sqrt(bytes.length / 4));
+  const ch = rendered.getChannelData(0);
+
+  // 16-bit PCM
+  const pcm = new Int16Array(ch.length);
+
+  for(let i=0;i<ch.length;i++){
+    let s = Math.max(-1, Math.min(1, ch[i]));
+    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+
+  const bytes = new Uint8Array(pcm.buffer);
 
   const canvas = document.getElementById("canvas");
+  const size = Math.ceil(Math.sqrt(bytes.length / 4));
+
   canvas.width = size;
   canvas.height = size;
 
-  const ctx = canvas.getContext("2d");
-  const img = ctx.createImageData(size, size);
+  const ctx2 = canvas.getContext("2d");
+  const img = ctx2.createImageData(size,size);
 
-  for (let i = 0; i < bytes.length; i++) {
-    img.data[i * 4] = bytes[i];
-    img.data[i * 4 + 1] = bytes[i];
-    img.data[i * 4 + 2] = bytes[i];
-    img.data[i * 4 + 3] = 255;
+  // IMPORTANT: store 4 bytes per pixel
+  for(let i=0;i<bytes.length;i++){
+    img.data[i] = bytes[i];
   }
 
-  ctx.putImageData(img, 0, 0);
+  ctx2.putImageData(img,0,0);
 
-  lastCanvas = canvas.toDataURL("image/png");
-
-  setStatus("✔ تم التحويل إلى صورة");
+  alert("✔ تم التحويل بنجاح");
 }
 
 
@@ -224,11 +90,9 @@ async function encodeAudio(){
    SAVE IMAGE
 ========================= */
 function saveImage(){
-
-  if (!lastCanvas) return alert("لا توجد صورة");
-
+  const canvas = document.getElementById("canvas");
   const a = document.createElement("a");
-  a.href = lastCanvas;
+  a.href = canvas.toDataURL("image/png");
   a.download = "audio.png";
   a.click();
 }
@@ -238,23 +102,19 @@ function saveImage(){
    LOAD IMAGE
 ========================= */
 function loadImage(){
-
   const file = document.getElementById("imageInput").files[0];
-  if (!file) return alert("اختر صورة");
+  if(!file) return;
 
   const img = new Image();
 
-  img.onload = () => {
-
+  img.onload = ()=>{
     const canvas = document.getElementById("canvas");
     const ctx = canvas.getContext("2d");
 
     canvas.width = img.width;
     canvas.height = img.height;
 
-    ctx.drawImage(img, 0, 0);
-
-    setStatus("✔ تم تحميل الصورة داخل النظام");
+    ctx.drawImage(img,0,0);
   };
 
   img.src = URL.createObjectURL(file);
@@ -262,42 +122,41 @@ function loadImage(){
 
 
 /* =========================
-   DECODE AUDIO
+   DECODE (FIXED)
 ========================= */
-function decodeAudio(){
+function decode(){
 
   const canvas = document.getElementById("canvas");
   const ctx = canvas.getContext("2d");
 
-  const data = ctx.getImageData(
-    0, 0,
-    canvas.width,
-    canvas.height
-  ).data;
+  const data = ctx.getImageData(0,0,canvas.width,canvas.height).data;
 
-  const bytes = [];
+  // reconstruct bytes
+  const bytes = new Uint8Array(data.length);
 
-  for (let i = 0; i < data.length; i += 4) {
-    bytes.push(data[i]);
+  for(let i=0;i<data.length;i++){
+    bytes[i] = data[i];
   }
 
-  const audioURL = ALM_CORE.audio.pcmToAudio(
-    new Uint8Array(bytes),
-    meta.sampleRate
-  );
+  const pcm = new Int16Array(bytes.buffer);
 
-  const audio = new Audio(audioURL);
-  audio.play();
+  const float = new Float32Array(pcm.length);
 
-  setStatus("▶ تشغيل الصوت");
-}
+  for(let i=0;i<pcm.length;i++){
+    float[i] = pcm[i] / 0x7FFF;
+  }
 
+  const audioCtx = new AudioContext();
+  const buffer = audioCtx.createBuffer(1, float.length, 8000);
 
-/* =========================
-   STATUS
-========================= */
-function setStatus(msg){
-  document.getElementById("status").textContent = msg;
+  buffer.copyToChannel(float,0);
+
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(audioCtx.destination);
+  src.start();
+
+  alert("▶ تم تشغيل الصوت");
 }
 
 </script>

@@ -1,64 +1,54 @@
+// =========================
+// ALM CORE (Shared Kernel)
+// =========================
+
 const ALM_CORE = {
-
-  crypto: {
-    checksum(bytes){
-      let s = 0;
-      for (let b of bytes) s = (s + b) % 1000000007;
-      return s;
-    }
-  },
-
-  encoding: {
-
-    toBytes(data){
-      return new TextEncoder().encode(data);
-    },
-
-    toText(bytes){
-      return new TextDecoder().decode(new Uint8Array(bytes));
-    }
-
-  },
 
   audio: {
 
+    // تحويل الصوت إلى WAV ثابت
     async fileToWav(file){
+
       const ctx = new AudioContext();
-      const buffer = await file.arrayBuffer();
-      const audio = await ctx.decodeAudioData(buffer);
+      const arrayBuffer = await file.arrayBuffer();
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+
+      const sampleRate = 8000;
 
       const offline = new OfflineAudioContext(
         1,
-        audio.duration * 8000,
-        8000
+        audioBuffer.duration * sampleRate,
+        sampleRate
       );
 
       const src = offline.createBufferSource();
-      src.buffer = audio;
+      src.buffer = audioBuffer;
       src.connect(offline.destination);
       src.start();
 
       const rendered = await offline.startRendering();
 
-      return ALM_CORE.audio.bufferToWav(rendered);
+      return this._toWav(rendered);
     },
 
-    bufferToWav(buffer){
+    _toWav(buffer){
+
       const length = buffer.length * 2 + 44;
-      const arrayBuffer = new ArrayBuffer(length);
-      const view = new DataView(arrayBuffer);
+      const ab = new ArrayBuffer(length);
+      const view = new DataView(ab);
 
       let offset = 0;
 
-      const write = s => {
-        for (let i = 0; i < s.length; i++)
+      const writeStr = (s) => {
+        for (let i = 0; i < s.length; i++) {
           view.setUint8(offset++, s.charCodeAt(i));
+        }
       };
 
-      write("RIFF");
+      writeStr("RIFF");
       view.setUint32(offset, 36 + buffer.length * 2, true); offset += 4;
-      write("WAVE");
-      write("fmt ");
+      writeStr("WAVE");
+      writeStr("fmt ");
       view.setUint32(offset, 16, true); offset += 4;
       view.setUint16(offset, 1, true); offset += 2;
       view.setUint16(offset, 1, true); offset += 2;
@@ -66,7 +56,7 @@ const ALM_CORE = {
       view.setUint32(offset, 16000, true); offset += 4;
       view.setUint16(offset, 2, true); offset += 2;
       view.setUint16(offset, 16, true); offset += 2;
-      write("data");
+      writeStr("data");
       view.setUint32(offset, buffer.length * 2, true); offset += 4;
 
       const ch = buffer.getChannelData(0);
@@ -77,7 +67,18 @@ const ALM_CORE = {
         offset += 2;
       }
 
-      return new Uint8Array(arrayBuffer);
+      return new Uint8Array(ab);
+    },
+
+    // استخراج الصوت من bytes
+    bytesToAudio(bytes){
+
+      const blob = new Blob(
+        [new Uint8Array(bytes)],
+        { type: "audio/wav" }
+      );
+
+      return URL.createObjectURL(blob);
     }
   }
 };

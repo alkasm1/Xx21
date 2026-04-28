@@ -35,7 +35,8 @@ const ALM = {
   ========================= */
   writeImage(canvas, bytes, header){
 
-    const size = 512;
+    const totalBytes = bytes.length + 5000;
+const size = Math.ceil(Math.sqrt(totalBytes));
 
     canvas.width = size;
     canvas.height = size;

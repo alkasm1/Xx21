@@ -1,126 +1,83 @@
-const ALM = {
+const ALM_CORE = {
 
-  /* =========================
-     CHECKSUM
-  ========================= */
-  checksum(bytes){
-    let s = 0;
-    for(let b of bytes){
-      s = (s + b) % 1000000007;
+  crypto: {
+    checksum(bytes){
+      let s = 0;
+      for (let b of bytes) s = (s + b) % 1000000007;
+      return s;
     }
-    return s;
   },
 
-  /* =========================
-     CREATE HEADER
-  ========================= */
-  createHeader(type, encoding, bytes, extra = {}){
+  encoding: {
 
-    return {
-      magic: "ALM1",
-      version: "1.0",
-      type: type,                 // text | program | audio | file
-      encoding: encoding || "",   // utf-8 | wav | bin
-      length: bytes.length,
-      checksum: this.checksum(bytes),
-      payload_offset: 4096,
+    toBytes(data){
+      return new TextEncoder().encode(data);
+    },
 
-      // 🔥 extensible
-      ...extra
-    };
+    toText(bytes){
+      return new TextDecoder().decode(new Uint8Array(bytes));
+    }
+
   },
 
-  /* =========================
-     WRITE IMAGE
-  ========================= */
-  writeImage(canvas, bytes, header){
+  audio: {
 
-    const totalBytes = bytes.length + 5000;
-const size = Math.ceil(Math.sqrt(totalBytes));
+    async fileToWav(file){
+      const ctx = new AudioContext();
+      const buffer = await file.arrayBuffer();
+      const audio = await ctx.decodeAudioData(buffer);
 
-    canvas.width = size;
-    canvas.height = size;
+      const offline = new OfflineAudioContext(
+        1,
+        audio.duration * 8000,
+        8000
+      );
 
-    const ctx = canvas.getContext("2d");
-    const img = ctx.createImageData(size, size);
-    const data = img.data;
+      const src = offline.createBufferSource();
+      src.buffer = audio;
+      src.connect(offline.destination);
+      src.start();
 
-    const write = (p, val) => {
-      const g = 255 - val;
-      const i = p * 4;
-      data[i] = data[i+1] = data[i+2] = g;
-      data[i+3] = 255;
-    };
+      const rendered = await offline.startRendering();
 
-    // header
-    const headerBytes = new TextEncoder().encode(JSON.stringify(header));
-    const headerSize = headerBytes.length;
+      return ALM_CORE.audio.bufferToWav(rendered);
+    },
 
-    write(0, (headerSize >> 24) & 255);
-    write(1, (headerSize >> 16) & 255);
-    write(2, (headerSize >> 8) & 255);
-    write(3, headerSize & 255);
+    bufferToWav(buffer){
+      const length = buffer.length * 2 + 44;
+      const arrayBuffer = new ArrayBuffer(length);
+      const view = new DataView(arrayBuffer);
 
-    for(let i=0;i<headerBytes.length;i++){
-      write(4+i, headerBytes[i]);
+      let offset = 0;
+
+      const write = s => {
+        for (let i = 0; i < s.length; i++)
+          view.setUint8(offset++, s.charCodeAt(i));
+      };
+
+      write("RIFF");
+      view.setUint32(offset, 36 + buffer.length * 2, true); offset += 4;
+      write("WAVE");
+      write("fmt ");
+      view.setUint32(offset, 16, true); offset += 4;
+      view.setUint16(offset, 1, true); offset += 2;
+      view.setUint16(offset, 1, true); offset += 2;
+      view.setUint32(offset, 8000, true); offset += 4;
+      view.setUint32(offset, 16000, true); offset += 4;
+      view.setUint16(offset, 2, true); offset += 2;
+      view.setUint16(offset, 16, true); offset += 2;
+      write("data");
+      view.setUint32(offset, buffer.length * 2, true); offset += 4;
+
+      const ch = buffer.getChannelData(0);
+
+      for (let i = 0; i < ch.length; i++) {
+        let s = Math.max(-1, Math.min(1, ch[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        offset += 2;
+      }
+
+      return new Uint8Array(arrayBuffer);
     }
-
-    // payload
-    const offset = header.payload_offset || 4096;
-
-    for(let i=0;i<bytes.length;i++){
-      write(offset+i, bytes[i] || 0);
-    }
-
-    ctx.putImageData(img,0,0);
-  },
-
-  /* =========================
-     READ IMAGE
-  ========================= */
-  readImage(canvas){
-
-    const ctx = canvas.getContext("2d");
-    const data = ctx.getImageData(0,0,canvas.width,canvas.height).data;
-
-    const read = (p) => 255 - data[p*4];
-
-    // header size
-    const headerSize =
-      (read(0)<<24) |
-      (read(1)<<16) |
-      (read(2)<<8) |
-      read(3);
-
-    // header string
-    let headerStr = "";
-    for(let i=0;i<headerSize;i++){
-      headerStr += String.fromCharCode(read(4+i));
-    }
-
-    let header;
-    try {
-      header = JSON.parse(headerStr);
-    } catch {
-      throw new Error("Header تالف");
-    }
-
-    if(header.magic !== "ALM1"){
-      throw new Error("ليست صورة ALM");
-    }
-
-    // payload
-    const bytes = [];
-    const offset = header.payload_offset || 4096;
-
-    for(let i=0;i<header.length;i++){
-      bytes.push(read(offset+i));
-    }
-
-    return {
-      header,
-      bytes: new Uint8Array(bytes)
-    };
   }
-
 };

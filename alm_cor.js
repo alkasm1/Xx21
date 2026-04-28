@@ -1,84 +1,82 @@
-// =========================
-// ALM CORE (Shared Kernel)
-// =========================
-
 const ALM_CORE = {
 
   audio: {
 
-    // تحويل الصوت إلى WAV ثابت
-    async fileToWav(file){
+    async fileToPCMBytes(file){
 
       const ctx = new AudioContext();
-      const arrayBuffer = await file.arrayBuffer();
-      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-
-      const sampleRate = 8000;
+      const buf = await file.arrayBuffer();
+      const audio = await ctx.decodeAudioData(buf);
 
       const offline = new OfflineAudioContext(
         1,
-        audioBuffer.duration * sampleRate,
-        sampleRate
+        audio.length,
+        audio.sampleRate
       );
 
       const src = offline.createBufferSource();
-      src.buffer = audioBuffer;
+      src.buffer = audio;
       src.connect(offline.destination);
       src.start();
 
       const rendered = await offline.startRendering();
 
-      return this._toWav(rendered);
-    },
+      const channel = rendered.getChannelData(0);
 
-    _toWav(buffer){
+      const bytes = new Uint8Array(channel.length * 2);
 
-      const length = buffer.length * 2 + 44;
-      const ab = new ArrayBuffer(length);
-      const view = new DataView(ab);
+      let j = 0;
 
-      let offset = 0;
+      for (let i = 0; i < channel.length; i++) {
 
-      const writeStr = (s) => {
-        for (let i = 0; i < s.length; i++) {
-          view.setUint8(offset++, s.charCodeAt(i));
-        }
-      };
+        let s = Math.max(-1, Math.min(1, channel[i]));
 
-      writeStr("RIFF");
-      view.setUint32(offset, 36 + buffer.length * 2, true); offset += 4;
-      writeStr("WAVE");
-      writeStr("fmt ");
-      view.setUint32(offset, 16, true); offset += 4;
-      view.setUint16(offset, 1, true); offset += 2;
-      view.setUint16(offset, 1, true); offset += 2;
-      view.setUint32(offset, 8000, true); offset += 4;
-      view.setUint32(offset, 16000, true); offset += 4;
-      view.setUint16(offset, 2, true); offset += 2;
-      view.setUint16(offset, 16, true); offset += 2;
-      writeStr("data");
-      view.setUint32(offset, buffer.length * 2, true); offset += 4;
+        let v = s < 0 ? s * 0x8000 : s * 0x7FFF;
 
-      const ch = buffer.getChannelData(0);
-
-      for (let i = 0; i < ch.length; i++) {
-        let s = Math.max(-1, Math.min(1, ch[i]));
-        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-        offset += 2;
+        bytes[j++] = v & 255;
+        bytes[j++] = (v >> 8) & 255;
       }
 
-      return new Uint8Array(ab);
+      return {
+        bytes,
+        sampleRate: rendered.sampleRate
+      };
     },
 
-    // استخراج الصوت من bytes
-    bytesToAudio(bytes){
+    pcmBytesToAudio(bytes, sampleRate){
 
-      const blob = new Blob(
-        [new Uint8Array(bytes)],
-        { type: "audio/wav" }
-      );
+      const samples = bytes.length / 2;
+      const buffer = new ArrayBuffer(44 + samples * 2);
+      const view = new DataView(buffer);
 
-      return URL.createObjectURL(blob);
+      let o = 0;
+
+      const write = s => {
+        for (let i = 0; i < s.length; i++)
+          view.setUint8(o++, s.charCodeAt(i));
+      };
+
+      write("RIFF");
+      view.setUint32(o, 36 + samples * 2, true); o += 4;
+      write("WAVE");
+      write("fmt ");
+      view.setUint32(o, 16, true); o += 4;
+      view.setUint16(o, 1, true); o += 2;
+      view.setUint16(o, 1, true); o += 2;
+      view.setUint32(o, sampleRate, true); o += 4;
+      view.setUint32(o, sampleRate * 2, true); o += 4;
+      view.setUint16(o, 2, true); o += 2;
+      view.setUint16(o, 16, true); o += 2;
+      write("data");
+      view.setUint32(o, samples * 2, true); o += 4;
+
+      for (let i = 0; i < bytes.length; i += 2) {
+        let v = bytes[i] | (bytes[i + 1] << 8);
+        view.setInt16(o, v, true);
+        o += 2;
+      }
+
+      return URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
     }
   }
 };

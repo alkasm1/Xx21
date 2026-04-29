@@ -16,17 +16,24 @@
     Run Certification
   </button>
 
-  <script src="../src/alm_kernel.js"></script>
-  <script src="../src/xx21_transport.js"></script>
-  <script src="../src/alm_certifier.js"></script>
-  <script src="../src/alm_system_test.js"></script>
+  <pre id="output"></pre>
+
+  <script src="./src/alm_kernel.js"></script>
+  <script src="./src/transports/xx21_transport.js"></script>
+  <script src="./src/alm_certifier.js"></script>
+  <script src="./src/alm_system_test.js"></script>
 
   <script>
     async function runCert() {
-      console.log(await certifyALMTransport({
+      const res = await certifyALMTransport({
         text: "1 + 2 * 3",
         type: 0x02
-      }));
+      });
+
+      document.getElementById("output").textContent =
+        JSON.stringify(res, null, 2);
+
+      console.log(res);
     }
   </script>
 

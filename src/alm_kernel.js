@@ -1,20 +1,36 @@
+/* =========================
+   ALM CORE KERNEL v1
+========================= */
+
 const ALM = {
 
-  wrap(text, type = 0x02, meta = 0) {
+  /* =========================
+     WRAP
+  ========================= */
+  wrap(data, type = 0x02, meta = 0) {
 
-    const payload = new TextEncoder().encode(text);
+    let payload;
+
+    if (data instanceof Uint8Array) {
+      payload = data;
+    } else if (typeof data === "string") {
+      payload = new TextEncoder().encode(data);
+    } else {
+      throw new Error("Unsupported payload type");
+    }
 
     const header = new Uint8Array(16);
     const dv = new DataView(header.buffer);
 
-    dv.setUint8(0, 1);
-    dv.setUint8(1, type);
+    dv.setUint8(0, 1);              // version
+    dv.setUint8(1, type);           // type
     dv.setUint32(2, payload.length, true);
     dv.setUint32(6, meta, true);
 
     const checksum = crc32(payload);
     dv.setUint32(10, checksum, true);
-    dv.setUint16(14, 0, true);
+
+    dv.setUint16(14, 0, true);      // reserved
 
     const packet = new Uint8Array(16 + payload.length);
     packet.set(header, 0);
@@ -23,18 +39,30 @@ const ALM = {
     return packet;
   },
 
+  /* =========================
+     UNWRAP
+  ========================= */
   unwrap(packet) {
 
     const view = packet instanceof Uint8Array
       ? packet
       : new Uint8Array(packet);
 
-    const dv = new DataView(view.buffer, view.byteOffset, view.byteLength);
+    const dv = new DataView(
+      view.buffer,
+      view.byteOffset,
+      view.byteLength
+    );
 
-    const type = dv.getUint8(1);
-    const length = dv.getUint32(2, true);
-    const meta = dv.getUint32(6, true);
+    const version  = dv.getUint8(0);
+    const type     = dv.getUint8(1);
+    const length   = dv.getUint32(2, true);
+    const meta     = dv.getUint32(6, true);
     const checksum = dv.getUint32(10, true);
+
+    if (version !== 1) {
+      throw new Error("Unsupported ALM version: " + version);
+    }
 
     const payload = view.slice(16, 16 + length);
 
@@ -45,19 +73,27 @@ const ALM = {
     return {
       type,
       meta,
-      data: new TextDecoder().decode(payload),
-      raw: payload
+      data: payload // 🔥 always Uint8Array
     };
   }
 };
 
+/* =========================
+   CRC32
+========================= */
+
 function crc32(data) {
+
   let crc = -1;
 
   for (let i = 0; i < data.length; i++) {
+
     crc ^= data[i];
+
     for (let k = 0; k < 8; k++) {
-      crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+      crc = (crc >>> 1) ^ (
+        (crc & 1) ? 0xEDB88320 : 0
+      );
     }
   }
 
@@ -65,7 +101,7 @@ function crc32(data) {
 }
 
 /* =========================
-   ROUTER
+   RUNTIME ROUTER
 ========================= */
 
 class ALM_RuntimeRouter {
@@ -88,6 +124,10 @@ class ALM_RuntimeRouter {
       throw new Error("No handler for type: " + type);
     }
 
-    return handler({ type, meta, data });
+    return handler({
+      data,
+      meta,
+      type
+    });
   }
 }

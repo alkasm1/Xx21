@@ -4,6 +4,8 @@
 
 window.equalBytes = function(a, b) {
 
+  if (!a || !b) return false;
+
   if (a.length !== b.length) return false;
 
   for (let i = 0; i < a.length; i++) {
@@ -53,18 +55,36 @@ function analyzeDrift(original, recovered, maxReport = 50) {
    ALM TRANSPORT CERTIFIER
 ========================= */
 
-async function certifyALMTransport({ data, type = 0x02, meta = 0 }) {
+async function certifyALMTransport({ data, text, type = 0x02, meta = 0 }) {
 
-  // 🔥 دعم string و binary
-  const originalPacket = ALM.wrap(data, type, meta);
+  console.log("=== ALM CERTIFICATION START ===");
 
+  // 🔥 دعم string و binary + توافق قديم
+  const input = data ?? text;
+
+  if (input === undefined || input === null) {
+    throw new Error("No data provided to certifier");
+  }
+
+  // 1) بناء packet
+  const originalPacket = ALM.wrap(input, type, meta);
+
+  // 2) encode → decode
   const medium = await transportEncode(originalPacket);
   const recoveredPacket = await transportDecode(medium);
 
+  // 3) فحص byte-level
   const byteOK = equalBytes(originalPacket, recoveredPacket);
 
+  console.log("Byte match:", byteOK);
+
   if (!byteOK) {
+
     const report = analyzeDrift(originalPacket, recoveredPacket);
+
+    console.warn("❌ DRIFT DETECTED");
+    console.warn(report);
+
     return {
       ok: false,
       byteOK,
@@ -72,15 +92,18 @@ async function certifyALMTransport({ data, type = 0x02, meta = 0 }) {
     };
   }
 
+  // 4) semantic check
   const before = ALM.unwrap(originalPacket);
   const after  = ALM.unwrap(recoveredPacket);
 
-  // 🔥 المقارنة الصحيحة للـ bytes
   const semanticOK =
     before.type === after.type &&
     before.meta === after.meta &&
     equalBytes(before.data, after.data);
 
+  console.log("Semantic match:", semanticOK);
+
+  // 5) النتيجة النهائية
   return {
     ok: true,
     byteOK,
@@ -91,7 +114,7 @@ async function certifyALMTransport({ data, type = 0x02, meta = 0 }) {
 }
 
 /* =========================
-   EXPORT TO WINDOW
+   EXPORT
 ========================= */
 
 window.certifyALMTransport = certifyALMTransport;

@@ -6,36 +6,46 @@
 </head>
 <body>
 
-  <h1>ALM Xx21 Demo</h1>
+<h1>ALM Xx21 Demo</h1>
 
-  <button onclick="runALMSystemTest()">
-    Run System Test
-  </button>
+<h3>📦 System Test</h3>
+<button onclick="runALMSystemTest()">Run System Test</button>
 
-  <button onclick="runCert()">
-    Run Certification
-  </button>
+<h3>🔐 Certification</h3>
+<button onclick="runCert()">Run Certification</button>
 
-  <pre id="output">Ready...</pre>
+<h3>🔊 Audio Demo</h3>
+<input type="file" id="audioInput" accept="audio/*">
+<button onclick="runAudio()">Run Audio Demo</button>
 
-  <script src="./src/alm_kernel.js"></script>
-  <script src="./src/transports/xx21_transport.js"></script>
-  <script src="./src/alm_certifier.js"></script>
-  <script src="./src/alm_system_test.js"></script>
+<pre id="output"></pre>
 
-  <script>
-    async function runCert() {
-      const res = await certifyALMTransport({
-        text: "1 + 2 * 3",
-        type: 0x02
-      });
+<script src="./src/alm_kernel.js"></script>
+<script src="./src/transports/xx21_transport.js"></script>
+<script src="./src/alm_certifier.js"></script>
+<script src="./src/alm_system_test.js"></script>
 
-      document.getElementById("output").textContent =
-        JSON.stringify(res, null, 2);
+<script>
+async function runCert() {
+  const res = await certifyALMTransport({
+    text: "1 + 2 * 3",
+    type: 0x02
+  });
 
-      console.log(res);
-    }
-  </script>
+  document.getElementById("output").textContent =
+    JSON.stringify(res, null, 2);
+}
+
+async function runAudio() {
+  const file = document.getElementById("audioInput").files[0];
+  if (!file) {
+    alert("اختر ملف صوتي");
+    return;
+  }
+
+  await runAudioDemo(file);
+}
+</script>
 
 </body>
 </html>

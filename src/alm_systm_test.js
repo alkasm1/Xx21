@@ -1,6 +1,11 @@
-async function runALMSystemTest() {
+/* =========================
+   ALM SYSTEM TEST (GLOBAL)
+========================= */
 
-  console.log("=== ALM SYSTEM TEST ===");
+window.runALMSystemTest = async function() {
+
+  const out = document.getElementById("output");
+  out.textContent = "Running...\n";
 
   const cases = [
     { text: "1 + 2 * 3", type: 0x02 },
@@ -15,9 +20,11 @@ async function runALMSystemTest() {
     const canvas = await transportEncode(packet);
     const recovered = await transportDecode(canvas);
 
-    const ok =
-      equalBytes(packet, recovered);
+    const ok = equalBytes(packet, recovered);
 
-    console.log("TYPE:", c.type, "BYTE_OK:", ok);
+    const line = `TYPE ${c.type} → ${ok}\n`;
+
+    console.log(line);
+    out.textContent += line;
   }
-}
+};

@@ -1,3 +1,7 @@
+/* =========================
+   Xx21 TRANSPORT (GLOBAL)
+========================= */
+
 const Xx21 = {
 
   SIZE: 512,
@@ -8,7 +12,7 @@ const Xx21 = {
     canvas.width = this.SIZE;
     canvas.height = this.SIZE;
 
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const img = ctx.createImageData(this.SIZE, this.SIZE);
     const data = img.data;
 
@@ -17,7 +21,7 @@ const Xx21 = {
       const v = packet[i];
       const p = i * 4;
 
-      data[p] = v;
+      data[p]     = v;
       data[p + 1] = v;
       data[p + 2] = v;
       data[p + 3] = 255;
@@ -30,7 +34,7 @@ const Xx21 = {
 
   decode(canvas) {
 
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
 
     const bytes = new Uint8Array(data.length / 4);
@@ -46,13 +50,13 @@ const Xx21 = {
 };
 
 /* =========================
-   ADAPTERS
+   GLOBAL EXPORTS
 ========================= */
 
-async function transportEncode(packet) {
+window.transportEncode = async function(packet) {
   return Xx21.encode(packet);
-}
+};
 
-async function transportDecode(canvas) {
+window.transportDecode = async function(canvas) {
   return Xx21.decode(canvas);
-}
+};

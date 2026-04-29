@@ -15,36 +15,28 @@
 <button onclick="runCert()">Run Certification</button>
 
 <h3>🔊 Audio Demo</h3>
-
-<!-- مهم: id يجب أن يطابق demo.js -->
-<input type="file" id="audioFile" accept="audio/*">
-
-<!-- مهم: اسم الدالة الصحيح -->
-<button onclick="runAudioDemo()">Run Audio Demo</button>
+<input type="file" id="audioInput" accept="audio/*">
+<button onclick="runAudio()">Run Audio Demo</button>
 
 <pre id="output"></pre>
 
-<!-- ترتيب التحميل مهم -->
+<!-- ترتيب مهم جدًا -->
 <script src="./src/alm_kernel.js"></script>
 <script src="./src/transports/xx21_transport.js"></script>
 <script src="./src/alm_certifier.js"></script>
 <script src="./src/alm_system_test.js"></script>
-
-<!-- 🔴  -->
 <script src="./demo/demo.js"></script>
 
 <script>
 async function runCert() {
   try {
     const res = await certifyALMTransport({
-      text: "1 + 2 * 3", // ✅ تصحيح: text وليس data
+      data: "1 + 2 * 3",
       type: 0x02
     });
 
     document.getElementById("output").textContent =
       JSON.stringify(res, null, 2);
-
-    console.log(res);
 
   } catch (e) {
     document.getElementById("output").textContent =

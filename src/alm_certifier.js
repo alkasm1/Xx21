@@ -53,9 +53,10 @@ function analyzeDrift(original, recovered, maxReport = 50) {
    ALM TRANSPORT CERTIFIER
 ========================= */
 
-async function certifyALMTransport({ text, type = 0x02, meta = 0 }) {
+async function certifyALMTransport({ data, type = 0x02, meta = 0 }) {
 
-  const originalPacket = ALM.wrap(text, type, meta);
+  // 🔥 دعم string و binary
+  const originalPacket = ALM.wrap(data, type, meta);
 
   const medium = await transportEncode(originalPacket);
   const recoveredPacket = await transportDecode(medium);
@@ -74,10 +75,11 @@ async function certifyALMTransport({ text, type = 0x02, meta = 0 }) {
   const before = ALM.unwrap(originalPacket);
   const after  = ALM.unwrap(recoveredPacket);
 
+  // 🔥 المقارنة الصحيحة للـ bytes
   const semanticOK =
     before.type === after.type &&
     before.meta === after.meta &&
-    before.data === after.data;
+    equalBytes(before.data, after.data);
 
   return {
     ok: true,

@@ -20,7 +20,7 @@ const Xx21 = {
     const img = ctx.createImageData(this.SIZE, this.SIZE);
     const data = img.data;
 
-    // 🔴 اكتب الطول في أول 4 بايت (R,G,B,A لأول بكسل)
+    // 🔴 اكتب طول الحزمة في أول 4 بايت
     const length = packet.length;
 
     data[0] = (length >> 24) & 255;
@@ -28,11 +28,11 @@ const Xx21 = {
     data[2] = (length >> 8) & 255;
     data[3] = length & 255;
 
-    // 🔴 اكتب البيانات بعده (كل بايت في بكسل مستقل)
+    // 🔴 اكتب البيانات بعد الطول
     for (let i = 0; i < packet.length; i++) {
 
       const v = packet[i];
-      const p = (i + 1) * 4; // نبدأ من البكسل الثاني
+      const p = (i + 1) * 4; // البكسل الثاني
 
       data[p]     = v;   // R
       data[p + 1] = v;   // G
@@ -52,7 +52,7 @@ const Xx21 = {
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
 
-    // 🔴 اقرأ الطول من أول بكسل
+    // 🔴 اقرأ الطول من أول 4 بايت
     const length =
       (data[0] << 24) |
       (data[1] << 16) |

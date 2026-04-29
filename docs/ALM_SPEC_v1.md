@@ -1,58 +1,84 @@
-# ALM v1 — Specification
+# ALM CORE SPEC v1
 
-## 1. Overview
-ALM v1 is a binary container protocol designed for deterministic transport across arbitrary mediums (image, QR, audio, file).
+## Overview
 
-It defines:
-- A fixed 16-byte header
-- A binary payload
-- CRC32 integrity validation
-- Type-based routing
+ALM (Abstract Layered Messaging) is a minimal binary protocol for transporting structured payloads across arbitrary mediums.
 
----
+ALM defines:
+- A fixed binary header (16 bytes)
+- A payload (binary)
+- A checksum (CRC32)
 
-## 2. Packet Structure
-
-[ HEADER (16 bytes) ][ PAYLOAD (N bytes) ]
+The protocol is transport-agnostic.
 
 ---
 
-## 3. Header Layout
+## Packet Structure
 
-| Offset | Size | Field     | Type     | Description |
-|--------|------|-----------|----------|-------------|
-| 0      | 1    | version   | uint8    | Protocol version (1) |
-| 1      | 1    | type      | uint8    | Routing type |
-| 2      | 4    | length    | uint32LE | Payload size |
-| 6      | 4    | meta      | uint32LE | Context-dependent |
-| 10     | 4    | checksum  | uint32LE | CRC32(payload) |
-| 14     | 2    | reserved  | uint16LE | Must be 0 |
-
----
-
-## 4. Types
-
-| Type | Meaning  |
-|------|----------|
-| 0x02 | PROGRAM  |
-| 0x03 | TEXT     |
-| 0x04 | FREQ     |
-| 0x05 | QR       |
+| Offset | Size | Field     | Description              |
+|--------|------|----------|--------------------------|
+| 0      | 1    | version  | Protocol version (1)     |
+| 1      | 1    | type     | Payload type             |
+| 2      | 4    | length   | Payload length (bytes)   |
+| 6      | 4    | meta     | Metadata (type-specific) |
+| 10     | 4    | checksum | CRC32(payload)           |
+| 14     | 2    | reserved | Reserved (0)             |
+| 16     | N    | payload  | Raw bytes                |
 
 ---
 
-## 5. Integrity Rules
+## Types
 
-- checksum MUST match CRC32(payload)
-- mismatch = reject packet
-- no fallback decoding allowed
+### 0x02 — PROGRAM
+- Payload: UTF-8 encoded source code
+- Meta: optional flags
+- Example: "1 + 2 * 3"
 
 ---
 
-## 6. Execution Model
+### 0x03 — AUDIO
+- Payload: raw audio file bytes (e.g. WAV)
+- Meta: sample rate (Hz), e.g. 8000
+- Notes:
+  - Kernel does NOT interpret audio
+  - Receiver MAY use meta for playback configuration
 
-ALM is a routing protocol only:
+---
 
-packet → validate → route → module
+### 0x04 — FREQ
+- Payload: UTF-8 text
+- Meta: optional
+- Example:
+  1915265
+  19757432
 
-ALM does NOT interpret payload meaning.
+---
+
+### 0x05 — QR
+- Payload: UTF-8 text
+- Meta: optional
+- Example: arbitrary string
+
+---
+
+### 0x06 — FILE (Reserved)
+- Payload: arbitrary binary file
+- Meta: optional (future: MIME/type flags)
+
+---
+
+## Payload Rules
+
+- Payload MUST be treated as raw bytes
+- No encoding assumptions at protocol level
+- Interpretation is responsibility of the handler
+
+---
+
+## Checksum
+
+- Algorithm: CRC32
+- Input: payload only (not header)
+- Stored at offset 10 (little-endian)
+
+Validation rule:

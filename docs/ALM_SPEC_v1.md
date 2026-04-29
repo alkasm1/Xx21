@@ -2,28 +2,44 @@
 
 ## Overview
 
-ALM (Abstract Layered Messaging) is a minimal binary protocol for transporting structured payloads across arbitrary mediums.
+ALM (Abstract Layered Messaging) is a minimal binary container protocol for transporting structured data across arbitrary mediums.
 
-ALM defines:
-- A fixed binary header (16 bytes)
-- A payload (binary)
-- A checksum (CRC32)
+It provides:
 
-The protocol is transport-agnostic.
+- A fixed binary packet structure
+- Payload integrity via checksum
+- Type-based routing
+- Transport independence
+
+ALM does NOT define how data is transported or interpreted.
 
 ---
 
 ## Packet Structure
 
+Every ALM packet consists of:
+
+[ HEADER (16 bytes) ][ PAYLOAD (N bytes) ]
+
+---
+
+## Header Layout (16 bytes)
+
 | Offset | Size | Field     | Description              |
-|--------|------|----------|--------------------------|
-| 0      | 1    | version  | Protocol version (1)     |
-| 1      | 1    | type     | Payload type             |
-| 2      | 4    | length   | Payload length (bytes)   |
-| 6      | 4    | meta     | Metadata (type-specific) |
-| 10     | 4    | checksum | CRC32(payload)           |
-| 14     | 2    | reserved | Reserved (0)             |
-| 16     | N    | payload  | Raw bytes                |
+|--------|------|-----------|--------------------------|
+| 0      | 1    | version   | Protocol version (1)     |
+| 1      | 1    | type      | Payload type             |
+| 2      | 4    | length    | Payload length (bytes)   |
+| 6      | 4    | meta      | Type-specific metadata   |
+| 10     | 4    | checksum  | CRC32(payload)           |
+| 14     | 2    | reserved  | Must be 0                |
+| 16     | N    | payload   | Raw bytes                |
+
+---
+
+## Endianness
+
+All multi-byte integers are **little-endian**.
 
 ---
 
@@ -57,13 +73,12 @@ The protocol is transport-agnostic.
 ### 0x05 — QR
 - Payload: UTF-8 text
 - Meta: optional
-- Example: arbitrary string
 
 ---
 
 ### 0x06 — FILE (Reserved)
 - Payload: arbitrary binary file
-- Meta: optional (future: MIME/type flags)
+- Meta: optional (future use)
 
 ---
 
@@ -78,7 +93,88 @@ The protocol is transport-agnostic.
 ## Checksum
 
 - Algorithm: CRC32
-- Input: payload only (not header)
-- Stored at offset 10 (little-endian)
+- Polynomial: 0xEDB88320
+- Input: payload only (NOT header)
 
 Validation rule:
+
+crc32(payload) === checksum
+
+If validation fails:
+→ Packet MUST be rejected
+
+---
+
+## Transport Requirements
+
+Any ALM transport (e.g. Xx21, QR, Audio, etc.) MUST:
+
+1. Accept `Uint8Array` as input
+2. Return `Uint8Array` as output
+3. Preserve ALL bytes exactly (byte-perfect)
+4. Pass roundtrip validation:
+
+ALM.wrap → transport → transport → ALM.unwrap
+
+---
+
+## Kernel Responsibilities
+
+The ALM kernel MUST:
+
+- Construct valid packets (wrap)
+- Validate checksum (unwrap)
+- NOT interpret payload semantics
+- Remain transport-agnostic
+
+---
+
+## Execution Model
+
+ALM operates as:
+
+Raw bytes
+→ Parse header
+→ Validate checksum
+→ Route by type
+→ Pass payload to handler
+
+---
+
+## Non-Goals
+
+ALM does NOT define:
+
+- Compression
+- Encryption
+- Encoding (base64, etc.)
+- Transport medium
+- Rendering logic
+- Execution logic (VM, Audio, etc.)
+
+---
+
+## Versioning
+
+- Current version: 1
+- Stored in byte 0
+- Changing version implies breaking change
+- Future versions MUST maintain compatibility awareness
+
+---
+
+## Summary
+
+ALM provides:
+
+- Fixed binary contract
+- Type-based routing
+- Byte-perfect transport guarantee
+- Zero semantic coupling
+
+This makes ALM suitable as a foundation for:
+
+- Messaging systems
+- Binary transport layers
+- Cross-medium data exchange
+- Experimental runtime systems

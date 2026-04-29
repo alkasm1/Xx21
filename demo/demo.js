@@ -105,3 +105,27 @@ function bufferToWav(buffer) {
 
   return new Uint8Array(arr);
 }
+window.runSecureACL = async function () {
+
+  const out = document.getElementById("output");
+  out.textContent = "Running secure ACL...\n";
+
+  try {
+    const packet = await ACL_SECURE.buildSetFreqSecure({
+      groupId: 1,
+      freqMHz: 5805,
+      bandwidth: 40,
+      txPower: 20
+    });
+
+    const canvas = await transportEncode(packet);
+    const recovered = await transportDecode(canvas);
+
+    const parsed = await ACL_SECURE.parseSecure(recovered);
+
+    out.textContent += JSON.stringify(parsed, null, 2);
+
+  } catch (e) {
+    out.textContent += "ERROR:\n" + e.message;
+  }
+};

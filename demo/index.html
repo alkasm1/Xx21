@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>ALM Xx21 Demo</title>
+</head>
+<body>
+
+  <h1>ALM Xx21 Demo</h1>
+
+  <button onclick="runALMSystemTest()">
+    Run System Test
+  </button>
+
+  <button onclick="runCert()">
+    Run Certification
+  </button>
+
+  <script src="../src/alm_kernel.js"></script>
+  <script src="../src/xx21_transport.js"></script>
+  <script src="../src/alm_certifier.js"></script>
+  <script src="../src/alm_system_test.js"></script>
+
+  <script>
+    async function runCert() {
+      console.log(await certifyALMTransport({
+        text: "1 + 2 * 3",
+        type: 0x02
+      }));
+    }
+  </script>
+
+</body>
+</html>

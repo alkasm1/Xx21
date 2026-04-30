@@ -1,20 +1,15 @@
-/* =========================
-   SENDER — NODE BACKEND
-   Uses ALM + ACL_SECURE_NODE + UDP
-========================= */
+// backend/sender.js
+//
+// Manual sender for testing ALM packets
+//
 
-const UDPTransport = require("./udp_transport");
-const ALM = require("../src/alm_kernel_node");
-const ACL_SECURE = require("../src/acl/alm_acl_secure_node");
+const dgram = require("dgram");
+const ACL = require("../src/acl/alm_acl_secure");
 
-(async () => {
+const socket = dgram.createSocket("udp4");
 
-  const udp = new UDPTransport({ port: 5000 });
-
-  console.log("[SENDER] Ready on UDP port 5000");
-
-  // مثال: إرسال أمر SET_FREQ آمن
-  const packet = await ACL_SECURE.buildSetFreqSecure({
+async function sendTest() {
+  const packet = await ACL.buildSetFreqSecure({
     groupId: 1,
     freqMHz: 5805,
     bandwidth: 40,
@@ -22,10 +17,9 @@ const ACL_SECURE = require("../src/acl/alm_acl_secure_node");
     keyId: 1
   });
 
-  console.log("[SENDER] Built secure packet:", packet.length, "bytes");
+  socket.send(packet, 5001, "127.0.0.1", () => {
+    console.log("📤 Sent test packet to Gateway");
+  });
+}
 
-  udp.send(packet);
-
-  console.log("[SENDER] Packet sent (broadcast)");
-
-})();
+sendTest();

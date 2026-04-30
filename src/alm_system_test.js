@@ -2,7 +2,7 @@
    ALM SYSTEM TEST (GLOBAL)
 ========================= */
 
-window.runALMSystemTest = async function() {
+window.runALMSystemTest = async function () {
 
   const out = document.getElementById("output");
   out.textContent = "Running ALM System Test...\n\n";
@@ -30,7 +30,7 @@ window.runALMSystemTest = async function() {
 
     if (byteOK) {
       const before = new TextDecoder().decode(ALM.unwrap(packet).data);
-      const after  = new TextDecoder().decode(ALM.unwrap(recovered).data);
+      const after = new TextDecoder().decode(ALM.unwrap(recovered).data);
 
       semanticOK = before === after;
     }

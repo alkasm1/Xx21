@@ -1,5 +1,5 @@
 /* =========================
-   Xx21 TRANSPORT (FINAL)
+   Xx21 TRANSPORT (FINAL STABLE)
    Uint8Array <-> Canvas
 ========================= */
 
@@ -104,15 +104,16 @@ const Xx21 = {
   }
 };
 
+
 /* =========================
    GLOBAL EXPORTS
 ========================= */
 
-window.transportEncode = async function(packet) {
+window.transportEncode = async function (packet) {
   return Xx21.encode(packet);
 };
 
-window.transportDecode = async function(canvas) {
+window.transportDecode = async function (canvas) {
   return Xx21.decode(canvas);
 };
 

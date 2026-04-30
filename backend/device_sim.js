@@ -1,30 +1,27 @@
-import { UDPTransport } from "./udp_transport.js";
-import { ACL_SECURE } from "../src/acl/alm_acl_secure.js";
-import "../src/alm_kernel.js";
+/* =========================
+   DEVICE SIMULATOR — NODE BACKEND
+   Uses ALM + ACL_SECURE_NODE + UDP
+========================= */
 
-const DEVICE_ID = process.argv[2] || "X";
+const UDPTransport = require("./udp_transport");
+const ALM = require("../src/alm_kernel_node");
+const ACL_SECURE = require("../src/acl/alm_acl_secure_node");
 
-const transport = new UDPTransport({ port: 5050 });
+const udp = new UDPTransport({ port: 5000 });
 
-console.log(`📡 Device ${DEVICE_ID} listening...`);
+console.log("[DEVICE] Listening on UDP port 5000...");
 
-transport.onPacket((packet) => {
+udp.onPacket(async (msg, rinfo) => {
+
+  console.log("\n[DEVICE] Raw packet from", rinfo.address, "len =", msg.length);
 
   try {
+    const parsed = await ACL_SECURE.parseSecure(msg);
 
-    const cmd = ACL_SECURE.parseSecure(packet);
-
-    console.log(`✅ Device ${DEVICE_ID} received:`, cmd);
-
-    if (cmd.cmd === "SET_FREQ") {
-
-      console.log(
-        `⚡ Device ${DEVICE_ID} → ${cmd.freqMHz} MHz | BW=${cmd.bandwidth} | PWR=${cmd.txPower}`
-      );
-    }
+    console.log("[DEVICE] Parsed secure ACL command:");
+    console.log(parsed);
 
   } catch (e) {
-
-    console.log(`❌ Device ${DEVICE_ID} rejected:`, e.message);
+    console.log("[DEVICE] ERROR:", e.message);
   }
 });

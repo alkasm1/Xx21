@@ -4,7 +4,9 @@
 
 window.equalBytes = function(a, b) {
 
-  if (!a || !b) return false;
+  if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) {
+    return false;
+  }
 
   if (a.length !== b.length) return false;
 
@@ -32,8 +34,7 @@ function analyzeDrift(original, recovered, maxReport = 50) {
         index: i,
         original: original[i],
         recovered: recovered[i],
-        delta: recovered[i] - original[i],
-        sameParity: (original[i] % 2) === (recovered[i] % 2)
+        delta: recovered[i] - original[i]
       });
 
       if (diffs.length >= maxReport) break;
@@ -55,62 +56,100 @@ function analyzeDrift(original, recovered, maxReport = 50) {
    ALM TRANSPORT CERTIFIER
 ========================= */
 
-async function certifyALMTransport({ data, text, type = 0x02, meta = 0 }) {
+async function certifyALMTransport({
+  data,
+  text,
+  type = 0x02,
+  meta = 0
+} = {}) {
 
   console.log("=== ALM CERTIFICATION START ===");
 
-  // 🔥 دعم string و binary + توافق قديم
-  const input = data ?? text;
+  try {
 
-  if (input === undefined || input === null) {
-    throw new Error("No data provided to certifier");
-  }
+    /* =========================
+       INPUT NORMALIZATION
+    ========================= */
+    const input = data ?? text ?? "1 + 2 * 3";
 
-  // 1) بناء packet
-  const originalPacket = ALM.wrap(input, type, meta);
+    /* =========================
+       BUILD PACKET
+    ========================= */
+    const originalPacket = ALM.wrap(input, type, meta);
 
-  // 2) encode → decode
-  const medium = await transportEncode(originalPacket);
-  const recoveredPacket = await transportDecode(medium);
+    /* =========================
+       TRANSPORT
+    ========================= */
+    const medium = await transportEncode(originalPacket);
+    const recoveredPacket = await transportDecode(medium);
 
-  // 3) فحص byte-level
-  const byteOK = equalBytes(originalPacket, recoveredPacket);
+    /* =========================
+       BYTE CHECK
+    ========================= */
+    const byteOK = equalBytes(originalPacket, recoveredPacket);
 
-  console.log("Byte match:", byteOK);
+    if (!byteOK) {
 
-  if (!byteOK) {
+      const report = analyzeDrift(originalPacket, recoveredPacket);
 
-    const report = analyzeDrift(originalPacket, recoveredPacket);
+      console.warn("❌ DRIFT DETECTED");
+      console.warn(report);
 
-    console.warn("❌ DRIFT DETECTED");
-    console.warn(report);
+      return {
+        ok: false,
+        byteOK,
+        report
+      };
+    }
+
+    /* =========================
+       SAFE UNWRAP
+    ========================= */
+    let before, after;
+
+    try {
+      before = ALM.unwrap(originalPacket);
+      after  = ALM.unwrap(recoveredPacket);
+    } catch (e) {
+
+      console.error("❌ UNWRAP FAILED:", e.message);
+
+      return {
+        ok: false,
+        byteOK,
+        error: "UNWRAP_FAILED",
+        message: e.message
+      };
+    }
+
+    /* =========================
+       SEMANTIC CHECK
+    ========================= */
+    const semanticOK =
+      before.type === after.type &&
+      before.meta === after.meta &&
+      equalBytes(before.data, after.data);
+
+    /* =========================
+       RESULT
+    ========================= */
+    return {
+      ok: true,
+      byteOK,
+      semanticOK,
+      before,
+      after
+    };
+
+  } catch (e) {
+
+    console.error("❌ CERTIFIER ERROR:", e.message);
 
     return {
       ok: false,
-      byteOK,
-      report
+      error: e.message
     };
   }
-
-  // 4) semantic check
-  const before = ALM.unwrap(originalPacket);
-  const after  = ALM.unwrap(recoveredPacket);
-
-  const semanticOK =
-    before.type === after.type &&
-    before.meta === after.meta &&
-    equalBytes(before.data, after.data);
-
-  console.log("Semantic match:", semanticOK);
-
-  // 5) النتيجة النهائية
-  return {
-    ok: true,
-    byteOK,
-    semanticOK,
-    before,
-    after
-  };
 }
 
 /* =========================

@@ -3,11 +3,24 @@
 <head>
   <meta charset="UTF-8">
   <title>ALM Xx21 Demo</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    h1 { margin-bottom: 10px; }
+    pre { background: #f0f0f0; padding: 10px; border-radius: 6px; }
+    button { margin: 5px 0; padding: 8px 14px; }
+  </style>
 </head>
 
 <body>
 
 <h1>ALM Xx21 Demo</h1>
+
+<!-- ========================= -->
+<!-- AUDIO DEMO -->
+<!-- ========================= -->
+<h3>🎧 Audio Transport</h3>
+<input type="file" id="audioInput" accept="audio/*">
+<button onclick="runAudio()">Run Audio Demo</button>
 
 <!-- ========================= -->
 <!-- SYSTEM TEST -->
@@ -25,7 +38,7 @@
 <!-- ACL DEMO -->
 <!-- ========================= -->
 <h3>🔐 Secure ACL</h3>
-<button onclick="runACL()">Run Secure ACL</button>
+<button onclick="runSecureACL()">Run Secure ACL</button>
 
 <!-- ========================= -->
 <!-- OUTPUT -->
@@ -60,19 +73,14 @@
 
 <script>
 async function runCert() {
+  const out = document.getElementById("output");
+  out.textContent = "Running certification...\n";
+
   try {
-
     const res = await certifyALMTransport();
-
-    document.getElementById("output").textContent =
-      JSON.stringify(res, null, 2);
-
+    out.textContent += JSON.stringify(res, null, 2);
   } catch (e) {
-
-    document.getElementById("output").textContent =
-      "ERROR:\n" + e.message;
-
-    console.error(e);
+    out.textContent = "ERROR:\n" + e.message;
   }
 }
 </script>

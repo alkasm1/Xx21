@@ -1,27 +1,42 @@
-/* =========================
-   DEVICE SIMULATOR — NODE BACKEND
-   Uses ALM + ACL_SECURE_NODE + UDP
-========================= */
+// backend/device_sim.js
+//
+// Simulated ALM Device
+// Responds with ACK
+//
 
-const UDPTransport = require("./udp_transport");
-const ALM = require("../src/alm_kernel_node");
-const ACL_SECURE = require("../src/acl/alm_acl_secure_node");
+const dgram = require("dgram");
+const ACL = require("../src/acl/alm_acl_secure");
 
-const udp = new UDPTransport({ port: 5000 });
+const socket = dgram.createSocket("udp4");
 
-console.log("[DEVICE] Listening on UDP port 5000...");
-
-udp.onPacket(async (msg, rinfo) => {
-
-  console.log("\n[DEVICE] Raw packet from", rinfo.address, "len =", msg.length);
-
+socket.on("message", async (msg, rinfo) => {
   try {
-    const parsed = await ACL_SECURE.parseSecure(msg);
+    const ack = {
+      ackId: 1,
+      status: 0,
+      deviceId: 1,
+      commandId: msg[2],
+      executionTime: Math.floor(Math.random() * 10),
+      errorCode: 0
+    };
 
-    console.log("[DEVICE] Parsed secure ACL command:");
-    console.log(parsed);
+    const ackPacket = Buffer.from([
+      0xA1, 0x01, 0xFF, ack.status,
+      0x00, 0x01,
+      ack.commandId,
+      0x00, ack.executionTime,
+      ack.errorCode
+    ]);
+
+    socket.send(ackPacket, rinfo.port, rinfo.address);
+
+    console.log("📤 Simulated ACK sent");
 
   } catch (e) {
-    console.log("[DEVICE] ERROR:", e.message);
+    console.log("⚠ Invalid packet");
   }
+});
+
+socket.bind(5000, () => {
+  console.log("🤖 Device Simulator running on 5000");
 });

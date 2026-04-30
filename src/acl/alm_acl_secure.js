@@ -1,190 +1,102 @@
-/* =========================
-   ACL v1.1 SECURITY (HMAC + NONCE)
-   Stable Organized Build
-========================= */
+// src/acl/alm_acl_secure.js
+//
+// ALM Secure ACL (HMAC + ACK + Commands)
+// Final stable version
+//
 
-// ⚠️ مفتاح تجريبي — غيّره في الإنتاج
-const ACL_KEYS = {
-  1: new TextEncoder().encode("super_secret_key_123")
-};
+const crypto = require("crypto");
 
-// مخزن nonces لمنع replay (بسيط للـ demo)
-const NONCE_CACHE = new Set();
-const NONCE_TTL_MS = 60_000;
+const MAGIC = 0xA1;
+const VERSION = 0x01;
 
-function addNonce(nonce) {
-  NONCE_CACHE.add(nonce);
-  setTimeout(() => NONCE_CACHE.delete(nonce), NONCE_TTL_MS);
+const KEY = Buffer.from("00112233445566778899AABBCCDDEEFF", "hex");
+
+function hmac(data) {
+  return crypto.createHmac("sha256", KEY).update(data).digest();
 }
 
-function hasNonce(nonce) {
-  return NONCE_CACHE.has(nonce);
+function writeUInt16(buf, offset, value) {
+  buf[offset] = (value >> 8) & 0xff;
+  buf[offset + 1] = value & 0xff;
 }
 
-function randomUint32() {
-  const arr = new Uint32Array(1);
-  crypto.getRandomValues(arr);
-  return arr[0];
+function readUInt16(buf, offset) {
+  return (buf[offset] << 8) | buf[offset + 1];
 }
 
 /* =========================
-   HMAC SHA-256
+   BUILD COMMAND PACKETS
 ========================= */
 
-async function hmacSign(keyBytes, dataBytes) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    keyBytes,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
+async function buildSetFreqSecure(params) {
+  const payload = Buffer.alloc(6);
+  payload[0] = params.groupId;
+  writeUInt16(payload, 1, params.freqMHz);
+  payload[3] = params.bandwidth;
+  payload[4] = params.txPower;
+  payload[5] = params.keyId;
 
-  const sig = await crypto.subtle.sign("HMAC", key, dataBytes);
-  return new Uint8Array(sig);
+  return buildPacket(0x11, params.deviceId || 1, payload);
 }
 
-async function hmacVerify(keyBytes, dataBytes, signature) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    keyBytes,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["verify"]
-  );
+async function buildRebootSecure(params) {
+  const payload = Buffer.alloc(2);
+  payload[0] = params.delay;
+  payload[1] = params.keyId;
 
-  return await crypto.subtle.verify("HMAC", key, signature, dataBytes);
+  return buildPacket(0x12, params.deviceId || 1, payload);
 }
 
 /* =========================
-   META ENCODING
+   BUILD GENERIC PACKET
 ========================= */
 
-function encodeMeta(keyId, nonce) {
-  return ((keyId & 0xFFFF) << 16) | (nonce & 0xFFFF);
+function buildPacket(cmdId, deviceId, payload) {
+  const header = Buffer.alloc(8);
+
+  header[0] = MAGIC;
+  header[1] = VERSION;
+  header[2] = cmdId;
+  header[3] = 0x00; // FLAGS
+
+  writeUInt16(header, 4, deviceId);
+  writeUInt16(header, 6, payload.length);
+
+  const raw = Buffer.concat([header, payload]);
+  const mac = hmac(raw);
+
+  return new Uint8Array(Buffer.concat([raw, mac]));
 }
 
-function decodeMeta(meta) {
+/* =========================
+   PARSE ACK
+========================= */
+
+function parseAck(buf) {
+  const b = Buffer.from(buf);
+
+  if (b[0] !== MAGIC) throw new Error("Invalid MAGIC");
+  if (b[1] !== VERSION) throw new Error("Invalid VERSION");
+
+  const ackId = b[2];
+  const status = b[3];
+  const deviceId = readUInt16(b, 4);
+  const commandId = b[6];
+  const execTime = readUInt16(b, 7);
+  const errorCode = b[9];
+
   return {
-    keyId: (meta >>> 16) & 0xFFFF,
-    nonce: meta & 0xFFFF
+    ackId,
+    status,
+    deviceId,
+    commandId,
+    executionTime: execTime,
+    errorCode
   };
 }
 
-/* =========================
-   ACL SECURE
-========================= */
-
-const ACL_SECURE = {
-
-  CMD: {
-    DISCOVER: 0x10,
-    SET_FREQ: 0x11,
-    REBOOT:   0x12
-  },
-
-  /* =========================
-     BUILD + SIGN
-  ========================= */
-
-  async buildSetFreqSecure({ groupId, freqMHz, bandwidth, txPower, keyId = 1 }) {
-
-    // payload (6 bytes)
-    const payload = new Uint8Array(6);
-    const dv = new DataView(payload.buffer);
-
-    dv.setUint16(0, groupId, true);
-    dv.setUint16(2, freqMHz, true);
-    dv.setUint8(4, bandwidth);
-    dv.setUint8(5, txPower);
-
-    // meta (keyId + nonce)
-    const nonce = randomUint32() & 0xFFFF;
-    const meta = encodeMeta(keyId, nonce);
-
-    // sign(meta + payload)
-    const metaBytes = new Uint8Array(4);
-    new DataView(metaBytes.buffer).setUint32(0, meta, true);
-
-    const toSign = new Uint8Array(metaBytes.length + payload.length);
-    toSign.set(metaBytes, 0);
-    toSign.set(payload, metaBytes.length);
-
-    const key = ACL_KEYS[keyId];
-    const signature = await hmacSign(key, toSign);
-
-    // final payload = [cmdId][payload][signature]
-    const finalPayload = new Uint8Array(1 + payload.length + signature.length);
-    finalPayload[0] = this.CMD.SET_FREQ;
-    finalPayload.set(payload, 1);
-    finalPayload.set(signature, 1 + payload.length);
-
-    return ALM.wrap(finalPayload, this.CMD.SET_FREQ, meta);
-  },
-
-  /* =========================
-     VERIFY + PARSE
-  ========================= */
-
-  async parseSecure(packet) {
-
-    const decoded = ALM.unwrap(packet);
-
-    if (!decoded || !decoded.data) {
-      throw new Error("ACL: Invalid packet");
-    }
-
-    const { keyId, nonce } = decodeMeta(decoded.meta);
-
-    if (hasNonce(nonce)) {
-      throw new Error("ACL: Replay detected");
-    }
-
-    addNonce(nonce);
-
-    const payload = decoded.data;
-    const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-
-    let offset = 0;
-
-    const cmdId = dv.getUint8(offset); 
-    offset += 1;
-
-    if (cmdId !== this.CMD.SET_FREQ) {
-      throw new Error("ACL: Unknown command");
-    }
-
-    const groupId  = dv.getUint16(offset, true); offset += 2;
-    const freqMHz  = dv.getUint16(offset, true); offset += 2;
-    const bandwidth = dv.getUint8(offset); offset += 1;
-    const txPower   = dv.getUint8(offset); offset += 1;
-
-    // signature
-    const signature = payload.slice(offset);
-
-    // reconstruct signed data
-    const metaBytes = new Uint8Array(4);
-    new DataView(metaBytes.buffer).setUint32(0, decoded.meta, true);
-
-    const toVerify = new Uint8Array(metaBytes.length + (offset - 1));
-    toVerify.set(metaBytes, 0);
-    toVerify.set(payload.slice(1, offset), metaBytes.length);
-
-    const key = ACL_KEYS[keyId];
-    const ok = await hmacVerify(key, toVerify, signature);
-
-    if (!ok) {
-      throw new Error("ACL: Signature verification failed");
-    }
-
-    return {
-      cmd: "SET_FREQ",
-      groupId,
-      freqMHz,
-      bandwidth,
-      txPower
-    };
-  }
+module.exports = {
+  buildSetFreqSecure,
+  buildRebootSecure,
+  parseAck
 };
-
-window.ACL_SECURE = ACL_SECURE;

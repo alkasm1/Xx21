@@ -1,162 +1,190 @@
-# ALM CORE SPEC v1
+# ALM Specification — Version 1.0
+Abstract Layered Messaging Protocol (ALM)
 
-## Overview
-
-ALM (Abstract Layered Messaging) is a minimal binary container protocol for transporting structured data across arbitrary mediums.
-
-It provides:
-
-- A fixed binary packet structure  
-- Payload integrity via checksum  
-- Type-based routing  
-- Transport independence  
-
-ALM does **NOT** define how data is transported or interpreted.
+Author: Brhom  
+Status: Stable  
+Last Updated: 2026-05-01
 
 ---
 
-## Packet Structure
+# 1. Overview
 
-Every ALM packet consists of:
----
+ALM هو بروتوكول مراسلة ثنائي (Binary Messaging Protocol) مصمم ليكون:
 
-## Header Layout (16 bytes)
+- سريع (Low‑latency)
+- خفيف (Low‑overhead)
+- آمن (HMAC)
+- قابل للتنفيذ على أي منصة (Transport‑agnostic)
+- مناسب للأنظمة الموزعة (Distributed Control Systems)
+- قابل للتوسّع (Extensible Commands)
 
-| Offset | Size | Field     | Description              |
-|--------|------|-----------|--------------------------|
-| 0      | 1    | version   | Protocol version (1)     |
-| 1      | 1    | type      | Payload type             |
-| 2      | 4    | length    | Payload length (bytes)   |
-| 6      | 4    | meta      | Type-specific metadata   |
-| 10     | 4    | checksum  | CRC32(payload)           |
-| 14     | 2    | reserved  | Must be 0                |
-| 16     | N    | payload   | Raw bytes                |
+ALM v1 هو الأساس الذي بُني عليه نظام Xx21 Control Plane.
 
 ---
 
-## Endianness
+# 2. Packet Structure
 
-All multi-byte integers are **little-endian**.
+كل حزمة ALM تتكون من:
 
----
+## 2.1 MAGIC
+قيمة ثابتة:
 
-## Types
+## 2.2 VERSION
+نسخة البروتوكول:
 
-### 0x02 — PROGRAM
-- Payload: UTF-8 encoded source code  
-- Meta: optional flags  
-- Example: `"1 + 2 * 3"`
+## 2.3 CMD_ID
+معرّف الأمر:
+- `0x11` → SetFreq  
+- `0x12` → Reboot  
+- `0x20` → Scan  
+- `0x30` → Custom  
 
----
+## 2.4 FLAGS
+بتات مستقبلية:
+- Bit0 → Encrypted  
+- Bit1 → Compressed  
 
-### 0x03 — AUDIO
-- Payload: raw audio file bytes (e.g. WAV)  
-- Meta: sample rate (Hz), e.g. 8000  
-- Notes:  
-  - Kernel does NOT interpret audio  
-  - Receiver MAY use meta for playback configuration  
+## 2.5 DEVICE_ID
+رقم الجهاز (0–65535)
 
----
+## 2.6 PAYLOAD_LENGTH
+طول البيانات
 
-### 0x04 — FREQ
-- Payload: UTF-8 text  
-- Meta: optional  
-- Example:
----
+## 2.7 PAYLOAD
+بيانات ثنائية (Binary)
 
-### 0x05 — QR
-- Payload: UTF-8 text  
-- Meta: optional  
-
----
-
-### 0x06 — FILE (Reserved)
-- Payload: arbitrary binary file  
-- Meta: optional (future use)  
+## 2.8 HMAC
+SHA‑256 على كامل الحزمة.
 
 ---
 
-## Payload Rules
+# 3. ACK Format
 
-- Payload MUST be treated as raw bytes  
-- No encoding assumptions at protocol level  
-- Interpretation is responsibility of the handler  
+## STATUS
+- `0x00` → OK  
+- `0x01` → FAIL  
 
----
-
-## Checksum
-
-- Algorithm: CRC32  
-- Polynomial: `0xEDB88320`  
-- Input: payload only (NOT header)  
-
-Validation rule:
-
-If validation fails:  
-→ Packet MUST be rejected
+## ERROR_CODE
+- `0x00` → No error  
+- `0x01` → Invalid payload  
+- `0x02` → Permission denied  
+- `0x03` → Internal error  
 
 ---
 
-## Transport Requirements
+# 4. Security Model
 
-Any ALM transport (e.g. Xx21, QR, Audio, etc.) MUST:
+## 4.1 HMAC
+يستخدم:
 
-1. Accept `Uint8Array` as input  
-2. Return `Uint8Array` as output  
-3. Preserve ALL bytes exactly (byte-perfect)  
-4. Pass roundtrip validation:
-
----
-
-## Kernel Responsibilities
-
-The ALM kernel MUST:
-
-- Construct valid packets (wrap)  
-- Validate checksum (unwrap)  
-- NOT interpret payload semantics  
-- Remain transport-agnostic  
+## 4.2 Key Rotation
+يدعم:
+- keyId  
+- multiple keys  
+- rotation schedule  
 
 ---
 
-## Execution Model
+# 5. Commands
+
+## 5.1 SetFreq (0x11)
+Payload:
+
+## 5.2 Reboot (0x12)
+Payload:
 
 ---
 
-## Non-Goals
+# 6. Transport Independence
 
-ALM does NOT define:
+ALM يعمل فوق أي Transport:
 
-- Compression  
-- Encryption  
-- Encoding (base64, etc.)  
-- Transport medium  
-- Rendering logic  
-- Execution logic (VM, Audio, etc.)  
-
----
-
-## Versioning
-
-- Current version: **1**  
-- Stored in byte 0  
-- Changing version implies breaking change  
-- Future versions MUST maintain compatibility awareness  
+- UDP  
+- WebSocket  
+- Canvas (Xx21)  
+- Serial  
+- BLE  
+- LoRa  
+- Custom RF  
 
 ---
 
-## Summary
+# 7. Xx21 Transport Notes
 
-ALM provides:
+Xx21 يحول Uint8Array إلى Canvas:
 
-- Fixed binary contract  
-- Type-based routing  
-- Byte-perfect transport guarantee  
-- Zero semantic coupling  
+- R = G = B = value  
+- A = 255  
+- بدون JSON  
+- بدون metadata  
+- بدون headers إضافية  
 
-This makes ALM suitable as a foundation for:
+---
 
-- Messaging systems  
-- Binary transport layers  
-- Cross-medium data exchange  
-- Experimental runtime systems
+# 8. Error Handling
+
+- Invalid MAGIC → drop  
+- Invalid VERSION → drop  
+- Invalid HMAC → drop  
+- Unknown CMD_ID → drop  
+- Payload too short → drop  
+
+---
+
+# 9. Versioning
+
+ALM v1 ثابت الآن.  
+أي تغييرات مستقبلية ستكون في:
+
+- ALM v2  
+- ALM Extensions  
+
+---
+
+# 10. Reference Implementation
+
+الملفات الرسمية:
+
+---
+
+# 11. Conclusion
+
+ALM v1 هو بروتوكول بسيط، سريع، آمن، وقابل للتنفيذ على أي منصة.  
+يمثل الأساس لكل أنظمة Xx21 وعمليات التحكم الشبكي.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

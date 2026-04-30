@@ -1,8 +1,8 @@
 /* =========================
-   AUDIO DEMO (FIXED)
+   AUDIO DEMO (STABLE)
 ========================= */
 
-window.runAudio = async function() {
+window.runAudio = async function () {
 
   const file = document.getElementById("audioInput").files[0];
 
@@ -15,7 +15,6 @@ window.runAudio = async function() {
   out.textContent = "Processing audio...\n";
 
   try {
-
     const audioCtx = new AudioContext();
 
     // 1) decode (MP3 → PCM)
@@ -37,7 +36,6 @@ window.runAudio = async function() {
 
     // 6) verify byte integrity
     const ok = equalBytes(wavBytes, data);
-
     out.textContent += "Byte integrity: " + ok + "\n";
 
     // 7) play audio
@@ -105,6 +103,12 @@ function bufferToWav(buffer) {
 
   return new Uint8Array(arr);
 }
+
+
+/* =========================
+   SECURE ACL DEMO
+========================= */
+
 window.runSecureACL = async function () {
 
   const out = document.getElementById("output");
@@ -121,7 +125,7 @@ window.runSecureACL = async function () {
     const canvas = await transportEncode(packet);
     const recovered = await transportDecode(canvas);
 
-    const parsed = await ACL_SECURE.parseSecure(recovered);
+    const parsed = ACL_SECURE.parseSecure(recovered);
 
     out.textContent += JSON.stringify(parsed, null, 2);
 

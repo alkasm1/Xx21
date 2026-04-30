@@ -122,43 +122,45 @@ const ACL_SECURE = {
      VERIFY + PARSE
   ========================= */
 
-  async parseSecure(packet) {
+   parseSecure(packet) {
 
-    const { type, meta, data } = ALM.unwrap(packet);
+  const decoded = ALM.unwrap(packet);
 
-    if (type !== 0x10) {
-      throw new Error("Not ACL");
-    }
+  if (!decoded || !decoded.data) {
+    throw new Error("ACL: Invalid packet");
+  }
 
-    const { keyId, nonce } = decodeMeta(meta);
+  const payload = decoded.data;
 
-    if (hasNonce(nonce)) {
-      throw new Error("Replay attack detected");
-    }
+  const dv = new DataView(
+    payload.buffer,
+    payload.byteOffset,
+    payload.byteLength
+  );
 
-    const key = ACL_KEYS[keyId];
-    if (!key) {
-      throw new Error("Unknown keyId");
-    }
+  let offset = 0;
 
-    // split payload / signature
-    const sigLen = 32; // SHA-256
-    const payload = data.slice(0, data.length - sigLen);
-    const signature = data.slice(data.length - sigLen);
+  const cmdId = dv.getUint8(offset); offset += 1;
+  const groupId = dv.getUint16(offset, true); offset += 2;
 
-    // rebuild signed data
-    const metaBytes = new Uint8Array(4);
-    new DataView(metaBytes.buffer).setUint32(0, meta, true);
+  if (cmdId === 0x11) { // SET_FREQ
 
-    const toVerify = new Uint8Array(metaBytes.length + payload.length);
-    toVerify.set(metaBytes, 0);
-    toVerify.set(payload, metaBytes.length);
+    const freqMHz = dv.getUint16(offset, true); offset += 2;
+    const bandwidth = dv.getUint8(offset); offset += 1;
+    const txPower = dv.getUint8(offset); offset += 1;
 
-    const valid = await hmacVerify(key, toVerify, signature);
+    return {
+      cmd: "SET_FREQ",
+      groupId,
+      freqMHz,
+      bandwidth,
+      txPower
+    };
+  }
 
-    if (!valid) {
-      throw new Error("Invalid signature");
-    }
+  throw new Error("ACL: Unknown command");
+}
+ 
 
     addNonce(nonce);
 

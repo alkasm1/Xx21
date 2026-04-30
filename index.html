@@ -4,45 +4,71 @@
   <meta charset="UTF-8">
   <title>ALM Xx21 Demo</title>
 </head>
+
 <body>
 
 <h1>ALM Xx21 Demo</h1>
 
+<!-- ========================= -->
+<!-- SYSTEM TEST -->
+<!-- ========================= -->
 <h3>📦 System Test</h3>
 <button onclick="runALMSystemTest()">Run System Test</button>
 
+<!-- ========================= -->
+<!-- CERTIFICATION -->
+<!-- ========================= -->
 <h3>🔐 Certification</h3>
 <button onclick="runCert()">Run Certification</button>
 
-  <h3>🔐 Secure ACL</h3>
-<button onclick="runSecureACL()">Run Secure ACL</button>
+<!-- ========================= -->
+<!-- ACL DEMO -->
+<!-- ========================= -->
+<h3>🔐 Secure ACL</h3>
+<button onclick="runACL()">Run Secure ACL</button>
 
-<script src="./src/acl/alm_acl_secure.js"></script>
-<h3>🔊 Audio Demo</h3>
-<input type="file" id="audioInput" accept="audio/*">
-<button onclick="runAudio()">Run Audio Demo</button>
-
+<!-- ========================= -->
+<!-- OUTPUT -->
+<!-- ========================= -->
 <pre id="output"></pre>
 
-<!-- ترتيب مهم جدًا -->
+<!-- ========================= -->
+<!-- SCRIPTS (ORDER مهم جدًا) -->
+<!-- ========================= -->
+
+<!-- 1) Kernel -->
 <script src="./src/alm_kernel.js"></script>
+
+<!-- 2) Transport -->
 <script src="./src/transports/xx21_transport.js"></script>
+
+<!-- 3) Certifier -->
 <script src="./src/alm_certifier.js"></script>
+
+<!-- 4) System Test -->
 <script src="./src/alm_system_test.js"></script>
+
+<!-- 5) ACL Secure -->
+<script src="./src/acl/alm_acl_secure.js"></script>
+
+<!-- 6) Demo -->
 <script src="./demo/demo.js"></script>
+
+<!-- ========================= -->
+<!-- INLINE FUNCTIONS -->
+<!-- ========================= -->
 
 <script>
 async function runCert() {
   try {
-    const res = await certifyALMTransport({
-      data: "1 + 2 * 3",
-      type: 0x02
-    });
+
+    const res = await certifyALMTransport();
 
     document.getElementById("output").textContent =
       JSON.stringify(res, null, 2);
 
   } catch (e) {
+
     document.getElementById("output").textContent =
       "ERROR:\n" + e.message;
 

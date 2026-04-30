@@ -106,13 +106,13 @@ function bufferToWav(buffer) {
 
 
 /* =========================
-   SECURE ACL DEMO
+   SECURE ACL DEMO (FIXED)
 ========================= */
 
 window.runSecureACL = async function () {
 
   const out = document.getElementById("output");
-  out.textContent = "Running secure ACL...\n";
+  out.textContent = "Running secure ACL...\n\n";
 
   try {
     const packet = await ACL_SECURE.buildSetFreqSecure({
@@ -125,7 +125,8 @@ window.runSecureACL = async function () {
     const canvas = await transportEncode(packet);
     const recovered = await transportDecode(canvas);
 
-    const parsed = ACL_SECURE.parseSecure(recovered);
+    // 🔥 الإصلاح هنا — إضافة await
+    const parsed = await ACL_SECURE.parseSecure(recovered);
 
     out.textContent += JSON.stringify(parsed, null, 2);
 

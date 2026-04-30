@@ -1,27 +1,31 @@
-import { UDPTransport } from "./udp_transport.js";
-import { ACL_SECURE } from "../src/acl/alm_acl_secure.js";
-import "../src/alm_kernel.js";
+/* =========================
+   SENDER — NODE BACKEND
+   Uses ALM + ACL_SECURE_NODE + UDP
+========================= */
 
-const transport = new UDPTransport({ port: 5050 });
+const UDPTransport = require("./udp_transport");
+const ALM = require("../src/alm_kernel_node");
+const ACL_SECURE = require("../src/acl/alm_acl_secure_node");
 
-async function run() {
+(async () => {
 
-  const packet = ACL_SECURE.buildSetFreqSecure({
+  const udp = new UDPTransport({ port: 5000 });
+
+  console.log("[SENDER] Ready on UDP port 5000");
+
+  // مثال: إرسال أمر SET_FREQ آمن
+  const packet = await ACL_SECURE.buildSetFreqSecure({
     groupId: 1,
     freqMHz: 5805,
     bandwidth: 40,
-    txPower: 20
+    txPower: 20,
+    keyId: 1
   });
 
-  console.log("🚀 Sending SET_FREQ broadcast...");
+  console.log("[SENDER] Built secure packet:", packet.length, "bytes");
 
-  transport.send(packet);
+  udp.send(packet);
 
-  // 🔥 اختبار replay
-  setTimeout(() => {
-    console.log("🔁 Sending again (should be rejected)");
-    transport.send(packet);
-  }, 1000);
-}
+  console.log("[SENDER] Packet sent (broadcast)");
 
-run();
+})();

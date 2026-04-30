@@ -1,5 +1,5 @@
 /* =========================
-   ALM CORE KERNEL v1
+   ALM CORE KERNEL v1 (FINAL)
 ========================= */
 
 const ALM = {
@@ -13,24 +13,26 @@ const ALM = {
 
     if (data instanceof Uint8Array) {
       payload = data;
+
     } else if (typeof data === "string") {
       payload = new TextEncoder().encode(data);
+
     } else {
-      throw new Error("Unsupported payload type");
+      throw new Error("ALM.wrap: Unsupported payload type");
     }
 
     const header = new Uint8Array(16);
     const dv = new DataView(header.buffer);
 
-    dv.setUint8(0, 1);              // version
-    dv.setUint8(1, type);           // type
+    dv.setUint8(0, 1);                 // version
+    dv.setUint8(1, type);              // type
     dv.setUint32(2, payload.length, true);
     dv.setUint32(6, meta, true);
 
     const checksum = crc32(payload);
     dv.setUint32(10, checksum, true);
 
-    dv.setUint16(14, 0, true);      // reserved
+    dv.setUint16(14, 0, true);         // reserved
 
     const packet = new Uint8Array(16 + payload.length);
     packet.set(header, 0);
@@ -44,14 +46,18 @@ const ALM = {
   ========================= */
   unwrap(packet) {
 
-    const view = packet instanceof Uint8Array
-      ? packet
-      : new Uint8Array(packet);
+    if (!(packet instanceof Uint8Array)) {
+      packet = new Uint8Array(packet);
+    }
+
+    if (packet.length < 16) {
+      throw new Error("ALM.unwrap: Packet too small");
+    }
 
     const dv = new DataView(
-      view.buffer,
-      view.byteOffset,
-      view.byteLength
+      packet.buffer,
+      packet.byteOffset,
+      packet.byteLength
     );
 
     const version  = dv.getUint8(0);
@@ -64,7 +70,11 @@ const ALM = {
       throw new Error("Unsupported ALM version: " + version);
     }
 
-    const payload = view.slice(16, 16 + length);
+    if (length > (packet.length - 16)) {
+      throw new Error("ALM.unwrap: Invalid payload length");
+    }
+
+    const payload = packet.slice(16, 16 + length);
 
     if (crc32(payload) !== checksum) {
       throw new Error("ALM checksum failed");
@@ -73,13 +83,27 @@ const ALM = {
     return {
       type,
       meta,
-      data: payload // 🔥 always Uint8Array
+      data: payload // always Uint8Array
     };
+  },
+
+  /* =========================
+     HELPERS
+  ========================= */
+
+  unwrapText(packet) {
+    const { data } = this.unwrap(packet);
+    return new TextDecoder().decode(data);
+  },
+
+  unwrapBytes(packet) {
+    const { data } = this.unwrap(packet);
+    return data;
   }
 };
 
 /* =========================
-   CRC32
+   CRC32 (stable)
 ========================= */
 
 function crc32(data) {
@@ -91,9 +115,8 @@ function crc32(data) {
     crc ^= data[i];
 
     for (let k = 0; k < 8; k++) {
-      crc = (crc >>> 1) ^ (
-        (crc & 1) ? 0xEDB88320 : 0
-      );
+      crc = (crc >>> 1) ^
+        ((crc & 1) ? 0xEDB88320 : 0);
     }
   }
 
@@ -125,9 +148,16 @@ class ALM_RuntimeRouter {
     }
 
     return handler({
-      data,
+      type,
       meta,
-      type
+      data
     });
   }
 }
+
+/* =========================
+   EXPORT (Browser)
+========================= */
+
+window.ALM = ALM;
+window.ALM_RuntimeRouter = ALM_RuntimeRouter;

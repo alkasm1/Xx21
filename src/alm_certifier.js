@@ -2,7 +2,7 @@
    BYTE EQUALITY
 ========================= */
 
-window.equalBytes = function(a, b) {
+window.equalBytes = function (a, b) {
 
   if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) {
     return false;
@@ -16,6 +16,7 @@ window.equalBytes = function(a, b) {
 
   return true;
 };
+
 
 /* =========================
    BYTE DRIFT ANALYZER
@@ -42,15 +43,14 @@ function analyzeDrift(original, recovered, maxReport = 50) {
   }
 
   return {
-    lengthMismatch: original.length !== recovered.length
-      ? {
-          original: original.length,
-          recovered: recovered.length
-        }
-      : null,
+    lengthMismatch:
+      original.length !== recovered.length
+        ? { original: original.length, recovered: recovered.length }
+        : null,
     diffs
   };
 }
+
 
 /* =========================
    ALM TRANSPORT CERTIFIER
@@ -109,7 +109,8 @@ async function certifyALMTransport({
 
     try {
       before = ALM.unwrap(originalPacket);
-      after  = ALM.unwrap(recoveredPacket);
+      after = ALM.unwrap(recoveredPacket);
+
     } catch (e) {
 
       console.error("❌ UNWRAP FAILED:", e.message);
@@ -151,6 +152,7 @@ async function certifyALMTransport({
     };
   }
 }
+
 
 /* =========================
    EXPORT

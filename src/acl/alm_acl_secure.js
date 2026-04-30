@@ -1,5 +1,6 @@
 /* =========================
    ACL v1.1 SECURITY (HMAC + NONCE)
+   Stable Organized Build
 ========================= */
 
 // ⚠️ مفتاح تجريبي — غيّره في الإنتاج
@@ -56,7 +57,7 @@ async function hmacVerify(keyBytes, dataBytes, signature) {
 }
 
 /* =========================
-   ENCODE META (keyId + nonce)
+   META ENCODING
 ========================= */
 
 function encodeMeta(keyId, nonce) {
@@ -71,7 +72,7 @@ function decodeMeta(meta) {
 }
 
 /* =========================
-   ACL (SECURE)
+   ACL SECURE
 ========================= */
 
 const ACL_SECURE = {
@@ -88,6 +89,7 @@ const ACL_SECURE = {
 
   async buildSetFreqSecure({ groupId, freqMHz, bandwidth, txPower, keyId = 1 }) {
 
+    // payload (6 bytes)
     const payload = new Uint8Array(6);
     const dv = new DataView(payload.buffer);
 
@@ -96,10 +98,11 @@ const ACL_SECURE = {
     dv.setUint8(4, bandwidth);
     dv.setUint8(5, txPower);
 
+    // meta (keyId + nonce)
     const nonce = randomUint32() & 0xFFFF;
     const meta = encodeMeta(keyId, nonce);
 
-    // sign(payload + meta)
+    // sign(meta + payload)
     const metaBytes = new Uint8Array(4);
     new DataView(metaBytes.buffer).setUint32(0, meta, true);
 
@@ -110,44 +113,69 @@ const ACL_SECURE = {
     const key = ACL_KEYS[keyId];
     const signature = await hmacSign(key, toSign);
 
-    // final payload = payload + signature
-    const finalPayload = new Uint8Array(payload.length + signature.length);
-    finalPayload.set(payload, 0);
-    finalPayload.set(signature, payload.length);
+    // final payload = [cmdId][payload][signature]
+    const finalPayload = new Uint8Array(1 + payload.length + signature.length);
+    finalPayload[0] = this.CMD.SET_FREQ;
+    finalPayload.set(payload, 1);
+    finalPayload.set(signature, 1 + payload.length);
 
-    return ALM.wrap(finalPayload, 0x10, meta);
+    return ALM.wrap(finalPayload, this.CMD.SET_FREQ, meta);
   },
 
   /* =========================
      VERIFY + PARSE
   ========================= */
 
-   parseSecure(packet) {
+  async parseSecure(packet) {
 
-  const decoded = ALM.unwrap(packet);
+    const decoded = ALM.unwrap(packet);
 
-  if (!decoded || !decoded.data) {
-    throw new Error("ACL: Invalid packet");
-  }
+    if (!decoded || !decoded.data) {
+      throw new Error("ACL: Invalid packet");
+    }
 
-  const payload = decoded.data;
+    const { keyId, nonce } = decodeMeta(decoded.meta);
 
-  const dv = new DataView(
-    payload.buffer,
-    payload.byteOffset,
-    payload.byteLength
-  );
+    if (hasNonce(nonce)) {
+      throw new Error("ACL: Replay detected");
+    }
 
-  let offset = 0;
+    addNonce(nonce);
 
-  const cmdId = dv.getUint8(offset); offset += 1;
-  const groupId = dv.getUint16(offset, true); offset += 2;
+    const payload = decoded.data;
+    const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
 
-  if (cmdId === 0x11) { // SET_FREQ
+    let offset = 0;
 
-    const freqMHz = dv.getUint16(offset, true); offset += 2;
+    const cmdId = dv.getUint8(offset); 
+    offset += 1;
+
+    if (cmdId !== this.CMD.SET_FREQ) {
+      throw new Error("ACL: Unknown command");
+    }
+
+    const groupId  = dv.getUint16(offset, true); offset += 2;
+    const freqMHz  = dv.getUint16(offset, true); offset += 2;
     const bandwidth = dv.getUint8(offset); offset += 1;
-    const txPower = dv.getUint8(offset); offset += 1;
+    const txPower   = dv.getUint8(offset); offset += 1;
+
+    // signature
+    const signature = payload.slice(offset);
+
+    // reconstruct signed data
+    const metaBytes = new Uint8Array(4);
+    new DataView(metaBytes.buffer).setUint32(0, decoded.meta, true);
+
+    const toVerify = new Uint8Array(metaBytes.length + (offset - 1));
+    toVerify.set(metaBytes, 0);
+    toVerify.set(payload.slice(1, offset), metaBytes.length);
+
+    const key = ACL_KEYS[keyId];
+    const ok = await hmacVerify(key, toVerify, signature);
+
+    if (!ok) {
+      throw new Error("ACL: Signature verification failed");
+    }
 
     return {
       cmd: "SET_FREQ",
@@ -155,24 +183,6 @@ const ACL_SECURE = {
       freqMHz,
       bandwidth,
       txPower
-    };
-  }
-
-  throw new Error("ACL: Unknown command");
-}
- 
-
-    addNonce(nonce);
-
-    // parse payload
-    const dv = new DataView(payload.buffer);
-
-    return {
-      cmd: "SET_FREQ",
-      groupId: dv.getUint16(0, true),
-      freqMHz: dv.getUint16(2, true),
-      bandwidth: dv.getUint8(4),
-      txPower: dv.getUint8(5)
     };
   }
 };

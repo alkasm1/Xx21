@@ -1,5 +1,5 @@
 /* =========================
-   ALM CORE KERNEL v1 (FINAL)
+   ALM CORE KERNEL v1 (STABLE)
 ========================= */
 
 const ALM = {
@@ -83,7 +83,7 @@ const ALM = {
     return {
       type,
       meta,
-      data: payload // always Uint8Array
+      data: payload
     };
   },
 
@@ -101,6 +101,7 @@ const ALM = {
     return data;
   }
 };
+
 
 /* =========================
    CRC32 (stable)
@@ -122,6 +123,7 @@ function crc32(data) {
 
   return (crc ^ -1) >>> 0;
 }
+
 
 /* =========================
    RUNTIME ROUTER
@@ -147,13 +149,10 @@ class ALM_RuntimeRouter {
       throw new Error("No handler for type: " + type);
     }
 
-    return handler({
-      type,
-      meta,
-      data
-    });
+    return handler({ type, meta, data });
   }
 }
+
 
 /* =========================
    EXPORT (Browser)

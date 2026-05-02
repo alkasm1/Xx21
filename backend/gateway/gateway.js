@@ -78,17 +78,25 @@ function dispatchCommand(deviceId, commandId, meta = {}) {
   const device = registry.get(deviceId);
   if (!device) return;
 
-  console.log("🚀 SEND →", deviceId, device.ip, device.port);
+  console.log("🚀 SENDING TO:", device.ip, device.port);
 
-  const packet = { deviceId, commandId, meta };
++ const requestId = "req_" + Math.random().toString(36).slice(2);
 
-  udp.send(
-    Buffer.from(JSON.stringify(packet)),
-    device.port,
-    device.ip
-  );
+  const packet = {
++   requestId,
+    deviceId,
+    commandId,
+    meta
+  };
 
-  eventBus.emit("command.sent", { deviceId, commandId });
+  const buf = Buffer.from(JSON.stringify(packet));
+
+  udp.send(buf, device.port, device.ip, (err) => {
+    if (err) console.error("UDP send error:", err);
+  });
+
+- eventBus.emit("command.sent", { deviceId, commandId });
++ eventBus.emit("command.sent", { requestId, deviceId, commandId });
 }
 
 // -----------------------------

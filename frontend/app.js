@@ -1,142 +1,151 @@
 // frontend/app.js
 
-const ws = new WebSocket("ws://localhost:8080");
+// -----------------------------
+// WebSocket
+// -----------------------------
+const ws = new WebSocket("ws://127.0.0.1:5001");
 
-const metricsEl = document.getElementById("metrics");
-const devicesEl = document.getElementById("devices");
-const logsEl = document.getElementById("logs");
+ws.onopen = () => {
+  console.log("✅ WS Connected");
+  setWsStatus(true);
+};
 
+ws.onclose = () => {
+  console.log("❌ WS Disconnected");
+  setWsStatus(false);
+};
+
+ws.onerror = (err) => {
+  console.error("WS Error:", err);
+};
+
+// -----------------------------
+// Helpers
+// -----------------------------
 function log(msg) {
-  logsEl.textContent += msg + "\n";
-  logsEl.scrollTop = logsEl.scrollHeight;
+  const logs = document.getElementById("logs");
+  logs.textContent += msg + "\n";
+  logs.scrollTop = logs.scrollHeight;
 }
 
+function setWsStatus(connected) {
+  const el = document.getElementById("wsStatus");
+  if (connected) {
+    el.textContent = "WS: ✅ Connected";
+    el.style.background = "#0a0";
+  } else {
+    el.textContent = "WS: ❌ Disconnected";
+    el.style.background = "#a00";
+  }
+}
+
+// -----------------------------
+// Core Send
+// -----------------------------
+function send(commandId, deviceId, params = {}) {
+  const payload = {
+    type: "ui.command",
+    deviceId,
+    commandId,
+    params
+  };
+
+  console.log("📤 SEND:", payload);
+  log(`📤 SEND → ${deviceId} cmd=${commandId}`);
+
+  ws.send(JSON.stringify(payload));
+}
+
+// -----------------------------
+// Device Commands (Expose globally)
+// -----------------------------
+window.setFreq = function (id) {
+  send(17, id, {
+    freqMHz: 433,
+    bandwidth: 20,
+    txPower: 10
+  });
+};
+
+window.reboot = function (id) {
+  send(18, id, { delay: 1 });
+};
+
+// -----------------------------
+// Broadcast (Bind to buttons)
+// -----------------------------
+document.getElementById("btn-bc-setfreq").onclick = () => {
+  const payload = {
+    type: "ui.broadcast",
+    commandId: 17,
+    params: {
+      freqMHz: 433,
+      bandwidth: 20,
+      txPower: 10
+    }
+  };
+
+  console.log("📡 BROADCAST SET_FREQ");
+  log("📡 BROADCAST SET_FREQ");
+
+  ws.send(JSON.stringify(payload));
+};
+
+document.getElementById("btn-bc-reboot").onclick = () => {
+  const payload = {
+    type: "ui.broadcast",
+    commandId: 18,
+    params: { delay: 1 }
+  };
+
+  console.log("📡 BROADCAST REBOOT");
+  log("📡 BROADCAST REBOOT");
+
+  ws.send(JSON.stringify(payload));
+};
+
+// -----------------------------
+// Handle Incoming Snapshots
+// -----------------------------
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+
+  if (data.type === "snapshot") {
+    renderMetrics(data.metrics);
+    renderDevices(data.devices);
+  }
+};
+
+// -----------------------------
+// Render Metrics
+// -----------------------------
+function renderMetrics(metrics) {
+  document.getElementById("metrics").textContent =
+    JSON.stringify(metrics, null, 2);
+}
+
+// -----------------------------
+// Render Devices Table
+// -----------------------------
 function renderDevices(devices) {
-  devicesEl.innerHTML = "";
+  const tbody = document.getElementById("devices");
+  tbody.innerHTML = "";
 
-  devices.forEach(d => {
-    const row = document.createElement("tr");
+  devices.forEach((d) => {
+    const tr = document.createElement("tr");
 
-    row.innerHTML = `
+    tr.innerHTML = `
       <td>${d.deviceId}</td>
       <td>${d.status}</td>
       <td>${new Date(d.lastSeen).toLocaleTimeString()}</td>
-      <td>${d.lastCommand}</td>
-      <td>${d.executionTime}</td>
+      <td>-</td>
+      <td>-</td>
+      <td>
+        <button onclick="setFreq(${d.deviceId})">Set Freq</button>
+        <button onclick="reboot(${d.deviceId})">Reboot</button>
+      </td>
     `;
 
-    devicesEl.appendChild(row);
+    tbody.appendChild(tr);
   });
 }
-
-ws.onopen = () => {
-  log("🟢 Connected to Gateway");
-};
-
-ws.onmessage = (e) => {
-  const msg = JSON.parse(e.data);
-
-  if (msg.type === "snapshot") {
-    metricsEl.textContent = JSON.stringify(msg.metrics, null, 2);
-    renderDevices(msg.devices);
-  }
-
-  if (msg.type === "ack") {
-    log("✅ ACK " + JSON.stringify(msg.data));
-  }
-
-  if (msg.type === "timeout") {
-    log("⏱ TIMEOUT " + JSON.stringify(msg.data));
-  }
-
-  if (msg.type === "command") {
-    log("📤 SENT " + JSON.stringify(msg.data));
-  }
-
-  if (msg.type === "job.created") {
-    log(`📡 Job started: ${msg.job.jobId}`);
-  }
-
-  if (msg.type === "job.update") {
-    const j = msg.job;
-    log(`📊 Job ${j.jobId}: OK=${j.ok} FAIL=${j.fail} TIMEOUT=${j.timeout}`);
-  }
-
-  if (msg.type === "job.done") {
-    log(`✅ Job ${msg.job.jobId} DONE`);
-  }
-};
-
-/* =========================
-   SEND COMMANDS (UNICAST)
-========================= */
-
-function sendCommand(cmd) {
-  ws.send(JSON.stringify({
-    type: "command",
-    ...cmd
-  }));
-}
-
-window.sendSetFreq = function () {
-  const deviceId = prompt("Device ID:");
-  if (!deviceId) return;
-
-  sendCommand({
-    command: "SET_FREQ",
-    deviceId: Number(deviceId),
-    params: {
-      freqMHz: 5805,
-      bandwidth: 40,
-      txPower: 20
-    }
-  });
-};
-
-window.sendReboot = function () {
-  const deviceId = prompt("Device ID:");
-  if (!deviceId) return;
-
-  sendCommand({
-    command: "REBOOT",
-    deviceId: Number(deviceId),
-    params: { delay: 2 }
-  });
-};
-
-/* =========================
-   BROADCAST COMMANDS
-========================= */
-
-function sendBroadcast(cmd) {
-  ws.send(JSON.stringify({
-    type: "broadcast",
-    ...cmd
-  }));
-}
-
-window.broadcastSetFreq = function () {
-  const groupId = prompt("Group ID:");
-  if (!groupId) return;
-
-  sendBroadcast({
-    command: "SET_FREQ",
-    groupId: Number(groupId),
-    params: {
-      freqMHz: 5805,
-      bandwidth: 40,
-      txPower: 20
-    }
-  });
-};
-
-window.broadcastReboot = function () {
-  const groupId = prompt("Group ID:");
-  if (!groupId) return;
-
-  sendBroadcast({
-    command: "REBOOT",
-    groupId: Number(groupId),
-    params: { delay: 2 }
-  });
-};

@@ -62,7 +62,13 @@ udp.on("message", (msg, rinfo) => {
     }
 
     if (packet.type === "ack") {
-      eventBus.emit("device.ack", packet);
+      eventBus.emit("device.ack", {
+        requestId: packet.requestId,
+        deviceId: packet.deviceId,
+        commandId: packet.commandId,
+        execMs: packet.execMs
+      });
+
       console.log("✅ ACK:", packet);
     }
 
@@ -72,31 +78,41 @@ udp.on("message", (msg, rinfo) => {
 udp.bind(5000);
 
 // -----------------------------
+// Helpers
+// -----------------------------
+function genRequestId() {
+  return "req_" + Math.random().toString(36).slice(2);
+}
+
+// -----------------------------
 // Send Command
 // -----------------------------
 function dispatchCommand(deviceId, commandId, meta = {}) {
   const device = registry.get(deviceId);
   if (!device) return;
 
-  console.log("🚀 SENDING TO:", device.ip, device.port);
+  const requestId = genRequestId();
 
-+ const requestId = "req_" + Math.random().toString(36).slice(2);
+  console.log("🚀 SENDING TO:", device.ip, device.port, "|", requestId);
 
   const packet = {
-+   requestId,
+    requestId,
     deviceId,
     commandId,
     meta
   };
 
-  const buf = Buffer.from(JSON.stringify(packet));
+  udp.send(
+    Buffer.from(JSON.stringify(packet)),
+    device.port,
+    device.ip
+  );
 
-  udp.send(buf, device.port, device.ip, (err) => {
-    if (err) console.error("UDP send error:", err);
+  eventBus.emit("command.sent", {
+    requestId,
+    deviceId,
+    commandId
   });
-
-- eventBus.emit("command.sent", { deviceId, commandId });
-+ eventBus.emit("command.sent", { requestId, deviceId, commandId });
 }
 
 // -----------------------------
@@ -106,9 +122,12 @@ function broadcastCommand(commandId, meta = {}) {
   const devices = registry.getAll();
 
   devices.forEach((d) => {
-    console.log("📡 BROADCAST →", d.deviceId);
+    const requestId = genRequestId();
+
+    console.log("📡 BROADCAST →", d.deviceId, "|", requestId);
 
     const packet = {
+      requestId,
       deviceId: d.deviceId,
       commandId,
       meta
@@ -121,6 +140,7 @@ function broadcastCommand(commandId, meta = {}) {
     );
 
     eventBus.emit("command.sent", {
+      requestId,
       deviceId: d.deviceId,
       commandId
     });
@@ -128,7 +148,7 @@ function broadcastCommand(commandId, meta = {}) {
 }
 
 // -----------------------------
-// Retry Engine
+// Retry Engine (legacy - سيتم استبداله في المرحلة 2)
 // -----------------------------
 eventBus.on("command.sent", ({ deviceId, commandId }) => {
   let retries = 0;

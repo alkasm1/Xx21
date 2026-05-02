@@ -1,3 +1,4 @@
+//
 // demo/demo.js
 //
 // Simple ALM + UDP demo
@@ -36,3 +37,4 @@ async function runDemo() {
 }
 
 runDemo();
+bash: //: Is a directory

@@ -57,13 +57,12 @@ socket.on("message", (msg) => {
   // Send ACK
   // -----------------------------
   const ack = {
-  type: "ack",
-+ requestId: packet.requestId,
-  deviceId: DEVICE_ID,
-  commandId: packet.commandId,
-  status: "ok",
-  execMs: 10
-};
+    type: "ack",
+    deviceId: DEVICE_ID,
+    commandId: packet.commandId,
+    status: "ok",
+    execMs: Math.floor(Math.random() * 20) + 5
+  };
 
   socket.send(
     Buffer.from(JSON.stringify(ack)),

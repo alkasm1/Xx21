@@ -54,10 +54,11 @@ socket.on("message", (msg) => {
   }
 
   // -----------------------------
-  // Send ACK
+  // Send ACK (مع requestId)
   // -----------------------------
   const ack = {
     type: "ack",
+    requestId: packet.requestId,   // ← 🔥 أهم إضافة
     deviceId: DEVICE_ID,
     commandId: packet.commandId,
     status: "ok",

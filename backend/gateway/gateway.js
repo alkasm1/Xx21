@@ -1,108 +1,176 @@
-// gateway/gateway.js
+// backend/gateway/gateway.js
 
 const dgram = require("dgram");
+const udp = dgram.createSocket("udp4");
+const WebSocket = require("ws");
+
 const eventBus = require("./event_bus");
 const registry = require("./device_registry");
-const handlePacket = require("./ack_handler");
-const { dispatchCommand, buildSetFreq, buildReboot } = require("./command_dispatcher");
-const { broadcastToGroup } = require("./broadcast_engine");
 const Metrics = require("./metrics");
 
-const PORT = 5001;
-
-const udp = dgram.createSocket("udp4");
-
-// METRICS
 const metrics = new Metrics(eventBus, registry);
 
-// استقبال ACK / رسائل من الأجهزة
+// -----------------------------
+// WebSocket Server
+// -----------------------------
+const wss = new WebSocket.Server({ port: 5001 });
+console.log("🌐 WS running on ws://0.0.0.0:5001");
+
+wss.on("connection", (ws, req) => {
+  console.log("🔌 WS connected:", req.socket.remoteAddress);
+
+  ws.on("message", (msg) => {
+    try {
+      const data = JSON.parse(msg.toString());
+
+      if (!data.commandId) {
+        console.log("❌ Missing commandId");
+        return;
+      }
+
+      if (data.type === "ui.command") {
+        dispatchCommand(data.deviceId, data.commandId, data.params || {});
+      }
+
+      if (data.type === "ui.broadcast") {
+        broadcastCommand(data.commandId, data.params || {});
+      }
+
+    } catch (e) {
+      console.error("WS parse error:", e);
+    }
+  });
+});
+
+// -----------------------------
+// UDP Listener
+// -----------------------------
 udp.on("message", (msg, rinfo) => {
-  handlePacket(msg, rinfo);
+  try {
+    const packet = JSON.parse(msg.toString());
+
+    if (packet.type === "heartbeat") {
+      console.log("💓", packet.deviceId);
+
+      registry.update(packet.deviceId, {
+        deviceId: packet.deviceId,
+        ip: rinfo.address,
+        port: rinfo.port,
+        lastSeen: Date.now(),
+        status: "online"
+      });
+    }
+
+    if (packet.type === "ack") {
+      eventBus.emit("device.ack", packet);
+      console.log("✅ ACK:", packet);
+    }
+
+  } catch {}
 });
 
-// تشغيل الـGateway
-udp.bind(PORT, () => {
-  console.log(`[GATEWAY] Listening on ${PORT}`);
-});
+udp.bind(5000);
 
-// أوامر من الـUI (Unicast)
-eventBus.on("ui.command", async ({ command, deviceId, params }) => {
+// -----------------------------
+// Send Command
+// -----------------------------
+function dispatchCommand(deviceId, commandId, meta = {}) {
   const device = registry.get(deviceId);
+  if (!device) return;
 
-  if (!device) {
-    console.log("❌ Device not found:", deviceId);
-    return;
-  }
+  console.log("🚀 SEND →", deviceId, device.ip, device.port);
 
-  if (command === "SET_FREQ") {
-    await dispatchCommand(udp, {
-      deviceId,
-      ip: device.ip,
-      port: device.port,
-      commandId: 0x11,
-      build: () =>
-        buildSetFreq({
-          groupId: 1,
-          freqMHz: params.freqMHz,
-          bandwidth: params.bandwidth,
-          txPower: params.txPower,
-          keyId: 1
-        }),
-      meta: {}
+  const packet = { deviceId, commandId, meta };
+
+  udp.send(
+    Buffer.from(JSON.stringify(packet)),
+    device.port,
+    device.ip
+  );
+
+  eventBus.emit("command.sent", { deviceId, commandId });
+}
+
+// -----------------------------
+// Broadcast
+// -----------------------------
+function broadcastCommand(commandId, meta = {}) {
+  const devices = registry.getAll();
+
+  devices.forEach((d) => {
+    console.log("📡 BROADCAST →", d.deviceId);
+
+    const packet = {
+      deviceId: d.deviceId,
+      commandId,
+      meta
+    };
+
+    udp.send(
+      Buffer.from(JSON.stringify(packet)),
+      d.port,
+      d.ip
+    );
+
+    eventBus.emit("command.sent", {
+      deviceId: d.deviceId,
+      commandId
     });
-  }
+  });
+}
 
-  if (command === "REBOOT") {
-    await dispatchCommand(udp, {
-      deviceId,
-      ip: device.ip,
-      port: device.port,
-      commandId: 0x12,
-      build: () =>
-        buildReboot({
-          delay: params.delay,
-          keyId: 1
-        }),
-      meta: {}
-    });
-  }
+// -----------------------------
+// Retry Engine
+// -----------------------------
+eventBus.on("command.sent", ({ deviceId, commandId }) => {
+  let retries = 0;
+
+  const interval = setInterval(() => {
+    const device = registry.get(deviceId);
+    if (!device) return;
+
+    if (retries >= 3) {
+      console.log(`❌ FAILED ${deviceId}`);
+      eventBus.emit("command.timeout", { deviceId, commandId });
+      clearInterval(interval);
+      return;
+    }
+
+    console.log(`🔁 Retry ${retries + 1} → ${deviceId}`);
+
+    udp.send(
+      Buffer.from(JSON.stringify({ deviceId, commandId })),
+      device.port,
+      device.ip
+    );
+
+    retries++;
+  }, 2000);
+
+  const handler = (ack) => {
+    if (ack.deviceId === deviceId && ack.commandId === commandId) {
+      clearInterval(interval);
+      eventBus.off("device.ack", handler);
+    }
+  };
+
+  eventBus.on("device.ack", handler);
 });
 
-// أوامر من الـUI (Broadcast / Group)
-eventBus.on("ui.broadcast", ({ command, groupId, params }) => {
-  if (command === "SET_FREQ") {
-    broadcastToGroup({
-      groupId,
-      commandId: 0x11,
-      build: () =>
-        buildSetFreq({
-          groupId,
-          freqMHz: params.freqMHz,
-          bandwidth: params.bandwidth,
-          txPower: params.txPower,
-          keyId: 1
-        }),
-      udp
-    });
-  }
-
-  if (command === "REBOOT") {
-    broadcastToGroup({
-      groupId,
-      commandId: 0x12,
-      build: () =>
-        buildReboot({
-          delay: params.delay,
-          keyId: 1
-        }),
-      udp
-    });
-  }
-});
-
-// مراقبة الأجهزة
+// -----------------------------
+// Snapshot
+// -----------------------------
 setInterval(() => {
-  registry.markOffline(5000);
-  console.log("\n📡 DEVICES:");
-  console.table(registry.getAll());
-}, 3000);
+  const snapshot = {
+    type: "snapshot",
+    devices: registry.getAll(),
+    metrics: metrics.snapshot()
+  };
+
+  wss.clients.forEach(ws => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(snapshot));
+    }
+  });
+
+}, 2000);

@@ -1,42 +1,74 @@
 // backend/device_sim.js
-//
-// Simulated ALM Device
-// Responds with ACK
-//
 
 const dgram = require("dgram");
-const ACL = require("../src/acl/alm_acl_secure");
-
 const socket = dgram.createSocket("udp4");
 
-socket.on("message", async (msg, rinfo) => {
-  try {
-    const ack = {
-      ackId: 1,
-      status: 0,
-      deviceId: 1,
-      commandId: msg[2],
-      executionTime: Math.floor(Math.random() * 10),
-      errorCode: 0
+const DEVICE_ID = 101;
+const GATEWAY_IP = "127.0.0.1";
+const GATEWAY_PORT = 5000;
+
+// -----------------------------
+// START (bind أولاً)
+// -----------------------------
+socket.bind(6000, () => {
+  console.log("🤖 Device Simulator running on UDP 6000");
+
+  // -----------------------------
+  // Heartbeat
+  // -----------------------------
+  setInterval(() => {
+    const hb = {
+      type: "heartbeat",
+      deviceId: DEVICE_ID,
+      ts: Date.now()
     };
 
-    const ackPacket = Buffer.from([
-      0xA1, 0x01, 0xFF, ack.status,
-      0x00, 0x01,
-      ack.commandId,
-      0x00, ack.executionTime,
-      ack.errorCode
-    ]);
+    socket.send(
+      Buffer.from(JSON.stringify(hb)),
+      GATEWAY_PORT,
+      GATEWAY_IP
+    );
 
-    socket.send(ackPacket, rinfo.port, rinfo.address);
-
-    console.log("📤 Simulated ACK sent");
-
-  } catch (e) {
-    console.log("⚠ Invalid packet");
-  }
+    console.log("💓 sent heartbeat from 6000");
+  }, 2000);
 });
 
-socket.bind(5000, () => {
-  console.log("🤖 Device Simulator running on 5000");
+// -----------------------------
+// Receive Commands
+// -----------------------------
+socket.on("message", (msg) => {
+  console.log("📥 DEVICE RECEIVED:", msg.toString());
+
+  let packet;
+  try {
+    packet = JSON.parse(msg.toString());
+  } catch {
+    console.log("❌ invalid JSON");
+    return;
+  }
+
+  // ❗ تحقق من وجود commandId
+  if (!packet.commandId) {
+    console.log("❌ commandId missing → ignoring");
+    return;
+  }
+
+  // -----------------------------
+  // Send ACK
+  // -----------------------------
+  const ack = {
+    type: "ack",
+    deviceId: DEVICE_ID,
+    commandId: packet.commandId,
+    status: "ok",
+    execMs: Math.floor(Math.random() * 20) + 5
+  };
+
+  socket.send(
+    Buffer.from(JSON.stringify(ack)),
+    GATEWAY_PORT,
+    GATEWAY_IP
+  );
+
+  console.log("✅ ACK sent:", ack);
 });

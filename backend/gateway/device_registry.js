@@ -2,6 +2,16 @@
 
 const devices = new Map(); // deviceId -> device info
 
+// 🔥 هذه الدالة هي التي يستدعيها gateway.js
+function update(deviceId, info) {
+  devices.set(deviceId, {
+    ...info,
+    deviceId,
+    lastSeen: Date.now()
+  });
+}
+
+// 🔥 هذه الدالة تُستخدم فقط للـACK (احتفظنا بها)
 function updateDevice(ack, rinfo) {
   const now = Date.now();
 
@@ -52,6 +62,7 @@ function getStats() {
 }
 
 module.exports = {
+  update,        // ← 🔥 هذه هي الدالة التي كانت ناقصة
   updateDevice,
   markOffline,
   getAll,

@@ -15,6 +15,18 @@
 
 <body>
 
+<!-- 🔥 WebSocket Status -->
+<div id="wsStatus" style="
+  padding:10px;
+  font-size:18px;
+  font-weight:bold;
+  background:#222;
+  color:#fff;
+  margin-bottom:15px;
+  border-radius:6px;">
+  WS: ⏳ connecting...
+</div>
+
 <h1>📡 Alm Control Dashboard</h1>
 
 <h2>📊 Metrics</h2>
@@ -29,23 +41,21 @@
       <th>Last Seen</th>
       <th>Last Cmd</th>
       <th>Exec Time</th>
+      <th>Actions</th>
     </tr>
   </thead>
   <tbody id="devices"></tbody>
 </table>
 
-<h2>🎛 Control</h2>
-<button onclick="sendSetFreq()">Set Freq</button>
-<button onclick="sendReboot()">Reboot</button>
-
 <h2>📡 Broadcast</h2>
-<button onclick="broadcastSetFreq()">Broadcast SetFreq</button>
-<button onclick="broadcastReboot()">Broadcast Reboot</button>
+<button id="btn-bc-setfreq">Broadcast SetFreq</button>
+<button id="btn-bc-reboot">Broadcast Reboot</button>
 
-<h2>📜 Alm</h2>
-<pre id="Alm"></pre>
+<h2>📜 Alm Logs</h2>
+<pre id="logs"></pre>
 
-<script src="frontend/app.js"></script>
+<!-- 🔥 Frontend Logic -->
+<script type="module" src="frontend/app.js"></script>
 
 </body>
 </html>

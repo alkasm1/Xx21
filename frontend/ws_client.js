@@ -1,10 +1,32 @@
 // frontend/ws_client.js
 
-export function connectWS(onMessage) {
-  const ws = new WebSocket("ws://localhost:8080");
+function connectWS(onMessage) {
+  const statusEl = document.getElementById("wsStatus");
 
-  ws.onopen = () => console.log("WS Connected");
-  ws.onmessage = (e) => onMessage(JSON.parse(e.data));
+  const ws = new WebSocket(`ws://${location.hostname}:5001`);
 
-  return ws;
+  ws.onopen = () => {
+    if (statusEl) statusEl.textContent = "WS: ✅ Connected";
+  };
+
+  ws.onerror = () => {
+    if (statusEl) statusEl.textContent = "WS: ❌ Error";
+  };
+
+  ws.onclose = () => {
+    if (statusEl) statusEl.textContent = "WS: ⚠️ Closed";
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      onMessage(data);
+    } catch (err) {
+      console.error("WS parse error:", err);
+    }
+  };
+
+  return ws; // ← مهم جدًا
 }
+
+export { connectWS };

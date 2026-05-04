@@ -17,35 +17,50 @@ const STATE_FILE = "./state.json";
 let pendingRequests = {};
 let broadcastRequests = {};
 
-function saveState() {
-const state = {
-pendingRequests,
-broadcastRequests
-};
+function serializeRequests(obj) {
+  const clean = {};
 
-fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  for (const id in obj) {
+    const r = obj[id];
+
+    clean[id] = {
+      requestId: r.requestId,
+      deviceId: r.deviceId,
+      commandId: r.commandId,
+      meta: r.meta,
+      retries: r.retries,
+      maxRetries: r.maxRetries,
+      state: r.state,
+      broadcastId: r.broadcastId
+    };
+  }
+
+  return clean;
+}
+
+function saveState() {
+  const state = {
+    pendingRequests: serializeRequests(pendingRequests),
+    broadcastRequests
+  };
+
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
 function loadState() {
-if (!fs.existsSync(STATE_FILE)) return;
+  if (!fs.existsSync(STATE_FILE)) return;
 
-const raw = fs.readFileSync(STATE_FILE);
-const state = JSON.parse(raw);
+  const raw = fs.readFileSync(STATE_FILE);
+  const state = JSON.parse(raw);
 
-pendingRequests = state.pendingRequests || {};
-broadcastRequests = state.broadcastRequests || {};
+  pendingRequests = state.pendingRequests || {};
+  broadcastRequests = state.broadcastRequests || {};
 
-console.log("♻️ State restored");
+  console.log("♻️ State restored");
 }
 
 // -----------------------------
-// Helpers
-// -----------------------------
-function genId(prefix) {
-return prefix + "_" + Math.random().toString(36).slice(2);
-}
-// -----------------------------
-// Queue + Scheduling (Phase 5.2)
+// Queue + Scheduling
 // -----------------------------
 let commandQueue = [];
 let isProcessingQueue = false;
@@ -58,8 +73,6 @@ function enqueueCommand(fn, priority = 0, delay = 0) {
   };
 
   commandQueue.push(job);
-
-  // ترتيب حسب الأولوية (الأعلى أولًا)
   commandQueue.sort((a, b) => b.priority - a.priority);
 
   processQueue();
@@ -99,254 +112,252 @@ function processQueue() {
 }
 
 // -----------------------------
+// Helpers
+// -----------------------------
+function genId(prefix) {
+  return prefix + "_" + Math.random().toString(36).slice(2);
+}
+
+// -----------------------------
 // WebSocket
 // -----------------------------
 const wss = new WebSocket.Server({ port: 5001 });
 
 wss.on("connection", (ws) => {
-ws.on("message", (msg) => {
-try {
-const data = JSON.parse(msg.toString());
+  ws.on("message", (msg) => {
+    try {
+      const data = JSON.parse(msg.toString());
 
-  if (data.type === "ui.command") {
-  enqueueCommand(() => {
-    dispatchCommand(
-      data.deviceId,
-      data.commandId,
-      data.params || {}
-    );
-  }, data.priority || 0, data.delay || 0);
-}
+      if (data.type === "ui.command") {
+        enqueueCommand(() => {
+          dispatchCommand(data.deviceId, data.commandId, data.params || {});
+        }, data.priority || 0, data.delay || 0);
+      }
 
-if (data.type === "ui.broadcast") {
-  enqueueCommand(() => {
-    broadcastCommand(
-      data.commandId,
-      data.params || {}
-    );
-  }, data.priority || 0, data.delay || 0);
-}
+      if (data.type === "ui.broadcast") {
+        enqueueCommand(() => {
+          broadcastCommand(data.commandId, data.params || {});
+        }, data.priority || 0, data.delay || 0);
+      }
 
-} catch (e) {}
-
-});
+    } catch (e) {}
+  });
 });
 
 // -----------------------------
 // UDP Listener
 // -----------------------------
 udp.on("message", (msg, rinfo) => {
-try {
-const packet = JSON.parse(msg.toString());
+  try {
+    const packet = JSON.parse(msg.toString());
 
-if (packet.type === "heartbeat") {  
-  registry.update(packet.deviceId, {  
-    deviceId: packet.deviceId,  
-    ip: rinfo.address,  
-    port: rinfo.port,  
-    lastSeen: Date.now(),  
-    status: "online"  
-  });  
-}  
+    if (packet.type === "heartbeat") {
+      registry.update(packet.deviceId, {
+        deviceId: packet.deviceId,
+        ip: rinfo.address,
+        port: rinfo.port,
+        lastSeen: Date.now(),
+        status: "online"
+      });
+    }
 
-if (packet.type === "ack") {  
-  handleAck(packet);  
-}
+    if (packet.type === "ack") {
+      handleAck(packet);
+    }
 
-} catch {}
+  } catch {}
 });
 
 udp.bind(5000);
 
 // -----------------------------
-// Send Command
+// Dispatch
 // -----------------------------
 function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
-const device = registry.get(deviceId);
-if (!device) return;
+  const device = registry.get(deviceId);
+  if (!device) return;
 
-const requestId = genId("req");
+  const requestId = genId("req");
 
-const request = {
-requestId,
-deviceId,
-commandId,
-meta,
-retries: 0,
-maxRetries: 3,
-state: "PENDING",
-broadcastId
-};
+  const request = {
+    requestId,
+    deviceId,
+    commandId,
+    meta,
+    retries: 0,
+    maxRetries: 3,
+    state: "PENDING",
+    broadcastId
+  };
 
-pendingRequests[requestId] = request;
+  pendingRequests[requestId] = request;
 
-sendPacket(device, request);
-scheduleTimeout(requestId);
+  sendPacket(device, request);
+  scheduleTimeout(requestId);
 
-eventBus.emit("command.sent", request);
-saveState();
+  eventBus.emit("command.sent", request);
+  saveState();
 }
 
 // -----------------------------
 // Broadcast
 // -----------------------------
 function broadcastCommand(commandId, meta = {}) {
-const devices = registry.getAll();
-const broadcastId = genId("bc");
+  const devices = registry.getAll();
+  const broadcastId = genId("bc");
 
-broadcastRequests[broadcastId] = {
-broadcastId,
-commandId,
-devices: {},
-status: "PENDING"
-};
+  broadcastRequests[broadcastId] = {
+    broadcastId,
+    commandId,
+    devices: {},
+    status: "PENDING"
+  };
 
-console.log("📡 BROADCAST START:", broadcastId);
+  console.log("📡 BROADCAST START:", broadcastId);
 
-devices.forEach((d) => {
-broadcastRequests[broadcastId].devices[d.deviceId] = "PENDING";
-dispatchCommand(d.deviceId, commandId, meta, broadcastId);
-});
+  devices.forEach((d) => {
+    broadcastRequests[broadcastId].devices[d.deviceId] = "PENDING";
+    dispatchCommand(d.deviceId, commandId, meta, broadcastId);
+  });
 
-saveState();
+  saveState();
 }
 
 // -----------------------------
 // Send Packet
 // -----------------------------
 function sendPacket(device, request) {
-const packet = {
-requestId: request.requestId,
-deviceId: request.deviceId,
-commandId: request.commandId,
-meta: request.meta
-};
+  const packet = {
+    requestId: request.requestId,
+    deviceId: request.deviceId,
+    commandId: request.commandId,
+    meta: request.meta
+  };
 
-udp.send(
-Buffer.from(JSON.stringify(packet)),
-device.port,
-device.ip
-);
+  udp.send(
+    Buffer.from(JSON.stringify(packet)),
+    device.port,
+    device.ip
+  );
 
-console.log("🚀 SEND:", request.requestId, "| retry:", request.retries);
+  console.log("🚀 SEND:", request.requestId, "| retry:", request.retries);
 }
 
 // -----------------------------
-// ACK Handling
+// ACK
 // -----------------------------
 function handleAck(packet) {
-const request = pendingRequests[packet.requestId];
-if (!request) return;
+  const request = pendingRequests[packet.requestId];
+  if (!request) return;
 
-request.state = "COMPLETED";
+  request.state = "COMPLETED";
 
-console.log("✅ ACK:", packet.requestId);
+  console.log("✅ ACK:", packet.requestId);
 
-clearTimeout(request.timeout);
-delete pendingRequests[packet.requestId];
+  clearTimeout(request._timeoutRef);
+  delete pendingRequests[packet.requestId];
 
-if (request.broadcastId) {
-updateBroadcast(request.broadcastId, request.deviceId, "OK");
-}
+  if (request.broadcastId) {
+    updateBroadcast(request.broadcastId, request.deviceId, "OK");
+  }
 
-eventBus.emit("command.completed", request);
-saveState();
+  eventBus.emit("command.completed", request);
+  saveState();
 }
 
 // -----------------------------
 // Timeout + Retry
 // -----------------------------
 function scheduleTimeout(requestId) {
-const request = pendingRequests[requestId];
-if (!request) return;
+  const request = pendingRequests[requestId];
+  if (!request) return;
 
-request.timeout = setTimeout(() => {
-handleTimeout(requestId);
-}, 2000);
+  request._timeoutRef = setTimeout(() => {
+    handleTimeout(requestId);
+  }, 2000);
 }
 
 function handleTimeout(requestId) {
-const request = pendingRequests[requestId];
-if (!request) return;
+  const request = pendingRequests[requestId];
+  if (!request) return;
 
-if (request.retries >= request.maxRetries) {
-console.log("❌ FAILED:", requestId);
+  if (request.retries >= request.maxRetries) {
+    console.log("❌ FAILED:", requestId);
 
-request.state = "FAILED";  
-delete pendingRequests[requestId];  
+    request.state = "FAILED";
+    delete pendingRequests[requestId];
 
-if (request.broadcastId) {  
-  updateBroadcast(request.broadcastId, request.deviceId, "FAILED");  
-}  
+    if (request.broadcastId) {
+      updateBroadcast(request.broadcastId, request.deviceId, "FAILED");
+    }
 
-eventBus.emit("command.failed", request);  
-saveState();  
-return;
+    eventBus.emit("command.failed", request);
+    saveState();
+    return;
+  }
 
-}
+  request.retries++;
 
-request.retries++;
+  const device = registry.get(request.deviceId);
+  if (!device) return;
 
-const device = registry.get(request.deviceId);
-if (!device) return;
+  console.log("🔁 RETRY:", requestId, "|", request.retries);
 
-console.log("🔁 RETRY:", requestId, "|", request.retries);
+  sendPacket(device, request);
+  scheduleTimeout(requestId);
 
-sendPacket(device, request);
-scheduleTimeout(requestId);
-
-saveState();
+  saveState();
 }
 
 // -----------------------------
 // Broadcast Update
 // -----------------------------
 function updateBroadcast(broadcastId, deviceId, status) {
-const bc = broadcastRequests[broadcastId];
-if (!bc) return;
+  const bc = broadcastRequests[broadcastId];
+  if (!bc) return;
 
-bc.devices[deviceId] = status;
+  bc.devices[deviceId] = status;
 
-const states = Object.values(bc.devices);
+  const states = Object.values(bc.devices);
 
-if (states.every(s => s === "OK")) {
-bc.status = "COMPLETED";
-} else if (states.every(s => s !== "PENDING")) {
-bc.status = "PARTIAL";
-}
+  if (states.every(s => s === "OK")) {
+    bc.status = "COMPLETED";
+  } else if (states.every(s => s !== "PENDING")) {
+    bc.status = "PARTIAL";
+  }
 
-if (bc.status !== "PENDING") {
-console.log("📊 BROADCAST DONE:", broadcastId, "|", bc.status);
-}
+  if (bc.status !== "PENDING") {
+    console.log("📊 BROADCAST DONE:", broadcastId, "|", bc.status);
+  }
 
-saveState();
+  saveState();
 }
 
 // -----------------------------
-// Restore After Restart
+// Restore
 // -----------------------------
 function restoreTimers() {
-Object.values(pendingRequests).forEach(req => {
-scheduleTimeout(req.requestId);
-});
+  Object.values(pendingRequests).forEach(req => {
+    scheduleTimeout(req.requestId);
+  });
 }
 
 // -----------------------------
 // Snapshot
 // -----------------------------
 setInterval(() => {
-const snapshot = {
-type: "snapshot",
-devices: registry.getAll(),
-metrics: metrics.snapshot(),
-broadcasts: broadcastRequests
-};
+  const snapshot = {
+    type: "snapshot",
+    devices: registry.getAll(),
+    metrics: metrics.snapshot(),
+    broadcasts: broadcastRequests
+  };
 
-wss.clients.forEach(ws => {
-if (ws.readyState === WebSocket.OPEN) {
-ws.send(JSON.stringify(snapshot));
-}
-});
+  wss.clients.forEach(ws => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(snapshot));
+    }
+  });
 }, 2000);
 
 // -----------------------------
@@ -354,3 +365,5 @@ ws.send(JSON.stringify(snapshot));
 // -----------------------------
 loadState();
 restoreTimers();
+
+console.log("🚀 Gateway Phase 5.2 running");

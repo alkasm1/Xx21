@@ -112,6 +112,33 @@ function processQueue() {
 }
 
 // -----------------------------
+// Rate Limiter (Token Bucket)
+// -----------------------------
+const RATE_LIMIT = 20; // packets per second
+let tokens = RATE_LIMIT;
+let lastRefill = Date.now();
+
+function refillTokens() {
+  const now = Date.now();
+  const delta = (now - lastRefill) / 1000;
+
+  tokens += delta * RATE_LIMIT;
+  if (tokens > RATE_LIMIT) tokens = RATE_LIMIT;
+
+  lastRefill = now;
+}
+
+function canSend() {
+  refillTokens();
+
+  if (tokens >= 1) {
+    tokens -= 1;
+    return true;
+  }
+
+  return false;
+}
+// -----------------------------
 // Helpers
 // -----------------------------
 function genId(prefix) {
@@ -227,21 +254,38 @@ function broadcastCommand(commandId, meta = {}) {
 // Send Packet
 // -----------------------------
 function sendPacket(device, request) {
-  const packet = {
-    requestId: request.requestId,
-    deviceId: request.deviceId,
-    commandId: request.commandId,
-    meta: request.meta
+  const trySend = () => {
+    if (!canSend()) {
+      setTimeout(trySend, 50); // retry after 50ms
+      return;
+    }
+
+    const packet = {
+      requestId: request.requestId,
+      deviceId: request.deviceId,
+      commandId: request.commandId,
+      meta: request.meta
+    };
+
+    udp.send(
+      Buffer.from(JSON.stringify(packet)),
+      device.port,
+      device.ip
+    );
+
+    console.log(
+      "🚀 SEND:",
+      request.requestId,
+      "| retry:",
+      request.retries,
+      "| tokens:",
+      tokens.toFixed(2)
+    );
   };
 
-  udp.send(
-    Buffer.from(JSON.stringify(packet)),
-    device.port,
-    device.ip
-  );
-
-  console.log("🚀 SEND:", request.requestId, "| retry:", request.retries);
+  trySend();
 }
+
 
 // -----------------------------
 // ACK

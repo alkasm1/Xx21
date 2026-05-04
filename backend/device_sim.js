@@ -1,5 +1,3 @@
-// backend/device_sim.js
-
 const dgram = require("dgram");
 const crypto = require("crypto");
 
@@ -9,44 +7,47 @@ const DEVICE_ID = 101;
 const GATEWAY_IP = "127.0.0.1";
 const GATEWAY_PORT = 5000;
 
-// 🔐 مفتاح سري مشترك (يجب أن يكون نفسه في gateway)
 const SECRET = "alm_shared_secret";
 
 // -----------------------------
-// Security Helpers
+// SECURITY
 // -----------------------------
-function genNonce() {
-  return crypto.randomBytes(8).toString("hex");
+function stableStringify(obj) {
+  return JSON.stringify(
+    Object.keys(obj)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = obj[key];
+        return acc;
+      }, {})
+  );
 }
 
 function signPacket(packet) {
   const clone = { ...packet };
   delete clone.sig;
 
-  const payload = JSON.stringify(clone);
-
   return crypto
     .createHmac("sha256", SECRET)
-    .update(payload)
+    .update(stableStringify(clone))
     .digest("hex");
 }
 
 function verifyPacket(packet) {
-  const receivedSig = packet.sig;
-  const expectedSig = signPacket(packet);
+  const expected = signPacket(packet);
+  return expected === packet.sig;
+}
 
-  return receivedSig === expectedSig;
+function genNonce() {
+  return crypto.randomBytes(8).toString("hex");
 }
 
 // -----------------------------
 // START
 // -----------------------------
 socket.bind(6000, () => {
-  console.log("🤖 Device Simulator running on UDP 6000");
+  console.log("🤖 Device Secure Simulator running");
 
-  // -----------------------------
-  // Heartbeat
-  // -----------------------------
   setInterval(() => {
     const hb = {
       type: "heartbeat",
@@ -68,37 +69,26 @@ socket.bind(6000, () => {
 });
 
 // -----------------------------
-// Receive Commands
+// RECEIVE
 // -----------------------------
 socket.on("message", (msg) => {
-  console.log("📥 DEVICE RECEIVED:", msg.toString());
-
   let packet;
+
   try {
     packet = JSON.parse(msg.toString());
   } catch {
-    console.log("❌ invalid JSON");
     return;
   }
 
-  // -----------------------------
-  // 🔐 Security Check
-  // -----------------------------
-  if (!packet.sig || !verifyPacket(packet)) {
+  console.log("📥 DEVICE RECEIVED:", packet);
+
+  if (!verifyPacket(packet)) {
     console.log("❌ invalid signature → ignoring packet");
     return;
   }
 
   // -----------------------------
-  // تحقق من commandId
-  // -----------------------------
-  if (!packet.commandId) {
-    console.log("❌ commandId missing → ignoring");
-    return;
-  }
-
-  // -----------------------------
-  // Send ACK (secured)
+  // ACK
   // -----------------------------
   const ack = {
     type: "ack",
@@ -119,5 +109,5 @@ socket.on("message", (msg) => {
     GATEWAY_IP
   );
 
-  console.log("✅ ACK sent (secured):", ack);
+  console.log("✅ ACK sent:", ack.requestId);
 });

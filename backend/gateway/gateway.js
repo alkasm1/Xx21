@@ -127,6 +127,9 @@ udp.on("message", (msg, rinfo) => {
   try {
     const packet = JSON.parse(msg.toString());
 
+    // -----------------------------
+    // Heartbeat
+    // -----------------------------
     if (packet.type === "heartbeat") {
       registry.update(packet.deviceId, {
         deviceId: packet.deviceId,
@@ -135,16 +138,31 @@ udp.on("message", (msg, rinfo) => {
         lastSeen: Date.now(),
         status: "online"
       });
+
+      return;
     }
 
+    // -----------------------------
+    // ACK
+    // -----------------------------
     if (packet.type === "ack") {
       handleAck(packet);
+      return;
     }
 
-  } catch {}
+    // -----------------------------
+    // Unknown packet (debug)
+    // -----------------------------
+    console.log("⚠️ Unknown packet type:", packet.type);
+
+  } catch (e) {
+    console.log("❌ UDP parse error:", e.message);
+  }
 });
 
-udp.bind(5000);
+udp.bind(5000, () => {
+  console.log("📡 UDP listening on 5000");
+});
 
 // -----------------------------
 // Dispatch

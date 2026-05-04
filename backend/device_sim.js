@@ -43,10 +43,50 @@ function genNonce() {
 }
 
 // -----------------------------
+// 🔥 Anti-Replay Layer
+// -----------------------------
+const seenNonces = new Map(); // nonce -> timestamp
+const NONCE_TTL = 10000; // 10 seconds
+const MAX_SKEW = 5000;   // 5 seconds
+
+function isReplay(packet) {
+  const now = Date.now();
+
+  // 1) Time check
+  if (Math.abs(now - packet.ts) > MAX_SKEW) {
+    console.log("⏱️ packet expired");
+    return true;
+  }
+
+  // 2) Nonce reuse
+  if (seenNonces.has(packet.nonce)) {
+    console.log("♻️ replay detected:", packet.nonce);
+    return true;
+  }
+
+  // store nonce
+  seenNonces.set(packet.nonce, now);
+
+  return false;
+}
+
+// Cleanup loop
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [nonce, ts] of seenNonces.entries()) {
+    if (now - ts > NONCE_TTL) {
+      seenNonces.delete(nonce);
+    }
+  }
+
+}, 5000);
+
+// -----------------------------
 // START
 // -----------------------------
 socket.bind(6000, () => {
-  console.log("🤖 Device Secure Simulator running");
+  console.log("🤖 Device Secure Simulator (Anti-Replay)");
 
   setInterval(() => {
     const hb = {
@@ -64,7 +104,7 @@ socket.bind(6000, () => {
       GATEWAY_IP
     );
 
-    console.log("💓 sent heartbeat (secured)");
+    console.log("💓 heartbeat (secured)");
   }, 2000);
 });
 
@@ -80,10 +120,17 @@ socket.on("message", (msg) => {
     return;
   }
 
-  console.log("📥 DEVICE RECEIVED:", packet);
+  console.log("📥 RECEIVED:", packet.requestId);
 
+  // 1) Signature check
   if (!verifyPacket(packet)) {
-    console.log("❌ invalid signature → ignoring packet");
+    console.log("❌ invalid signature");
+    return;
+  }
+
+  // 2) Anti-replay check
+  if (isReplay(packet)) {
+    console.log("❌ replay blocked");
     return;
   }
 
@@ -109,5 +156,5 @@ socket.on("message", (msg) => {
     GATEWAY_IP
   );
 
-  console.log("✅ ACK sent:", ack.requestId);
+  console.log("✅ ACK:", packet.requestId);
 });

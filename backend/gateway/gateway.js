@@ -10,28 +10,25 @@ const Metrics = require("./metrics");
 
 const metrics = new Metrics(eventBus, registry);
 
-// -----------------------------
-// Pending Requests Map
-// -----------------------------
 let pendingRequests = {};
 
 // -----------------------------
-// WebSocket Server
+// Config
+// -----------------------------
+const MAX_RETRIES = 3;
+const BASE_TIMEOUT = 2000;
+
+// -----------------------------
+// WebSocket
 // -----------------------------
 const wss = new WebSocket.Server({ port: 5001 });
-console.log("🌐 WS running on ws://0.0.0.0:5001");
 
-wss.on("connection", (ws, req) => {
-  console.log("🔌 WS connected:", req.socket.remoteAddress);
-
+wss.on("connection", (ws) => {
   ws.on("message", (msg) => {
     try {
       const data = JSON.parse(msg.toString());
 
-      if (!data.commandId) {
-        console.log("❌ Missing commandId");
-        return;
-      }
+      if (!data.commandId) return;
 
       if (data.type === "ui.command") {
         dispatchCommand(data.deviceId, data.commandId, data.params || {});
@@ -41,9 +38,7 @@ wss.on("connection", (ws, req) => {
         broadcastCommand(data.commandId, data.params || {});
       }
 
-    } catch (e) {
-      console.error("WS parse error:", e);
-    }
+    } catch {}
   });
 });
 
@@ -54,12 +49,7 @@ udp.on("message", (msg, rinfo) => {
   try {
     const packet = JSON.parse(msg.toString());
 
-    // -------------------------
-    // Heartbeat
-    // -------------------------
     if (packet.type === "heartbeat") {
-      console.log("💓", packet.deviceId);
-
       registry.update(packet.deviceId, {
         deviceId: packet.deviceId,
         ip: rinfo.address,
@@ -69,47 +59,11 @@ udp.on("message", (msg, rinfo) => {
       });
     }
 
-    // -------------------------
-    // ACK Handling (Core Logic)
-    // -------------------------
     if (packet.type === "ack") {
-      const { requestId, deviceId, commandId, execMs } = packet;
-
-      const request = pendingRequests[requestId];
-
-      if (!request) {
-        console.log("⚠️ ACK for unknown request:", requestId);
-        return;
-      }
-
-      request.ackReceived = true;
-      request.executionStatus = "completed";
-      request.execMs = execMs;
-
-      console.log(
-        `✅ ACK: device=${deviceId} | command=${commandId} | request=${requestId} | exec=${execMs}ms`
-      );
-
-      // Cleanup timeout
-      clearTimeout(request.timeout);
-
-      // Emit lifecycle events
-      eventBus.emit("device.ack", packet);
-
-      eventBus.emit("command.completed", {
-        requestId,
-        deviceId,
-        commandId,
-        execMs
-      });
-
-      // Remove from map
-      delete pendingRequests[requestId];
+      handleAck(packet);
     }
 
-  } catch (err) {
-    console.error("UDP parse error:", err);
-  }
+  } catch {}
 });
 
 udp.bind(5000);
@@ -122,49 +76,19 @@ function genRequestId() {
 }
 
 // -----------------------------
-// Send Command
+// Dispatch
 // -----------------------------
 function dispatchCommand(deviceId, commandId, meta = {}) {
   const device = registry.get(deviceId);
-  if (!device) {
-    console.log("❌ Device not found:", deviceId);
-    return;
-  }
+  if (!device) return;
 
   const requestId = genRequestId();
-  const timeoutDuration = 5000;
 
-  const request = {
-    requestId,
-    deviceId,
-    commandId,
-    meta,
-    retries: 0,
-    ackReceived: false,
-    executionStatus: "pending",
-    timeout: setTimeout(() => handleTimeout(request), timeoutDuration)
-  };
+  const request = createRequest(requestId, deviceId, commandId, meta);
 
   pendingRequests[requestId] = request;
 
-  console.log(
-    `🚀 SEND: device=${deviceId} | command=${commandId} | request=${requestId}`
-  );
-
-  const packet = {
-    requestId,
-    deviceId,
-    commandId,
-    meta
-  };
-
-  udp.send(
-    Buffer.from(JSON.stringify(packet)),
-    device.port,
-    device.ip
-  );
-
-  eventBus.emit("command.sent", { requestId, deviceId, commandId });
+  sendPacket(request);
 }
 
 // -----------------------------
@@ -175,69 +99,141 @@ function broadcastCommand(commandId, meta = {}) {
 
   devices.forEach((d) => {
     const requestId = genRequestId();
-    const timeoutDuration = 5000;
 
-    const request = {
-      requestId,
-      deviceId: d.deviceId,
-      commandId,
-      meta,
-      retries: 0,
-      ackReceived: false,
-      executionStatus: "pending",
-      timeout: setTimeout(() => handleTimeout(request), timeoutDuration)
-    };
+    const request = createRequest(requestId, d.deviceId, commandId, meta);
 
     pendingRequests[requestId] = request;
 
-    console.log(
-      `📡 BROADCAST: device=${d.deviceId} | command=${commandId} | request=${requestId}`
-    );
-
-    const packet = {
-      requestId,
-      deviceId: d.deviceId,
-      commandId,
-      meta
-    };
-
-    udp.send(
-      Buffer.from(JSON.stringify(packet)),
-      d.port,
-      d.ip
-    );
-
-    eventBus.emit("command.sent", {
-      requestId,
-      deviceId: d.deviceId,
-      commandId
-    });
+    sendPacket(request);
   });
 }
 
 // -----------------------------
-// Timeout Handling
+// Request Factory
 // -----------------------------
-function handleTimeout(request) {
-  if (request.ackReceived) return;
+function createRequest(requestId, deviceId, commandId, meta) {
+  return {
+    requestId,
+    deviceId,
+    commandId,
+    meta,
+    retries: 0,
+    state: "PENDING",
+    timeout: scheduleTimeout(requestId, 0)
+  };
+}
+
+// -----------------------------
+// Send
+// -----------------------------
+function sendPacket(request) {
+  const device = registry.get(request.deviceId);
+  if (!device) return;
 
   console.log(
-    `❌ TIMEOUT: device=${request.deviceId} | command=${request.commandId} | request=${request.requestId}`
+    `🚀 SEND: device=${request.deviceId} | cmd=${request.commandId} | req=${request.requestId} | retry=${request.retries}`
   );
 
-  request.executionStatus = "failed";
+  const packet = {
+    requestId: request.requestId,
+    deviceId: request.deviceId,
+    commandId: request.commandId,
+    meta: request.meta
+  };
 
-  eventBus.emit("command.timeout", {
+  udp.send(
+    Buffer.from(JSON.stringify(packet)),
+    device.port,
+    device.ip
+  );
+
+  eventBus.emit("command.sent", {
     requestId: request.requestId,
     deviceId: request.deviceId,
     commandId: request.commandId
   });
-
-  delete pendingRequests[request.requestId];
 }
 
 // -----------------------------
-// Snapshot (UI + Metrics)
+// ACK Handler
+// -----------------------------
+function handleAck(packet) {
+  const { requestId, deviceId, commandId, execMs } = packet;
+
+  const request = pendingRequests[requestId];
+  if (!request) {
+    console.log("⚠️ Unknown ACK:", requestId);
+    return;
+  }
+
+  clearTimeout(request.timeout);
+
+  request.state = "COMPLETED";
+
+  console.log(
+    `✅ ACK: device=${deviceId} | cmd=${commandId} | req=${requestId}`
+  );
+
+  eventBus.emit("command.completed", {
+    requestId,
+    deviceId,
+    commandId,
+    execMs
+  });
+
+  delete pendingRequests[requestId];
+}
+
+// -----------------------------
+// Timeout Scheduler
+// -----------------------------
+function scheduleTimeout(requestId, retryCount) {
+  const jitter = Math.random() * 300;
+  const delay = BASE_TIMEOUT * Math.pow(2, retryCount) + jitter;
+
+  return setTimeout(() => handleTimeout(requestId), delay);
+}
+
+// -----------------------------
+// Timeout Handler (Retry Engine)
+// -----------------------------
+function handleTimeout(requestId) {
+  const request = pendingRequests[requestId];
+  if (!request) return;
+
+  if (request.state === "COMPLETED") return;
+
+  if (request.retries >= MAX_RETRIES) {
+    request.state = "FAILED";
+
+    console.log(
+      `❌ FAILED: device=${request.deviceId} | cmd=${request.commandId} | req=${requestId}`
+    );
+
+    eventBus.emit("command.timeout", {
+      requestId,
+      deviceId: request.deviceId,
+      commandId: request.commandId
+    });
+
+    delete pendingRequests[requestId];
+    return;
+  }
+
+  request.retries++;
+  request.state = "RETRYING";
+
+  console.log(
+    `🔁 RETRY ${request.retries}: device=${request.deviceId} | req=${requestId}`
+  );
+
+  sendPacket(request);
+
+  request.timeout = scheduleTimeout(requestId, request.retries);
+}
+
+// -----------------------------
+// Snapshot
 // -----------------------------
 setInterval(() => {
   const snapshot = {

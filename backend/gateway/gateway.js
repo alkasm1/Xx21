@@ -11,56 +11,30 @@ const Metrics = require("./metrics");
 const metrics = new Metrics(eventBus, registry);
 
 // -----------------------------
-// Security Config
+// SECURITY
 // -----------------------------
 const SECRET = "alm_shared_secret";
-const NONCE_WINDOW_MS = 10000; // 10 ثواني
 
-let usedNonces = new Map();
-
-function genNonce() {
-  return crypto.randomBytes(8).toString("hex");
+// stable stringify (🔥 مهم جدًا)
+function stableStringify(obj) {
+  return JSON.stringify(
+    Object.keys(obj)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = obj[key];
+        return acc;
+      }, {})
+  );
 }
 
 function signPacket(packet) {
-  const payload = `${packet.requestId}|${packet.deviceId}|${packet.commandId}|${packet.ts}|${packet.nonce}`;
-  return crypto.createHmac("sha256", SECRET).update(payload).digest("hex");
-}
+  const clone = { ...packet };
+  delete clone.sig;
 
-function verifyPacket(packet) {
-  if (!packet.sig || !packet.ts || !packet.nonce) return false;
-
-  const now = Date.now();
-
-  // تحقق من الزمن (anti replay)
-  if (Math.abs(now - packet.ts) > NONCE_WINDOW_MS) {
-    console.log("⛔ Timestamp expired");
-    return false;
-  }
-
-  // تحقق من nonce
-  if (usedNonces.has(packet.nonce)) {
-    console.log("⛔ Replay detected:", packet.nonce);
-    return false;
-  }
-
-  const expected = signPacket(packet);
-
-  if (expected !== packet.sig) {
-    console.log("⛔ Invalid signature");
-    return false;
-  }
-
-  usedNonces.set(packet.nonce, now);
-
-  // تنظيف nonces القديمة
-  for (const [n, t] of usedNonces) {
-    if (now - t > NONCE_WINDOW_MS) {
-      usedNonces.delete(n);
-    }
-  }
-
-  return true;
+  return crypto
+    .createHmac("sha256", SECRET)
+    .update(stableStringify(clone))
+    .digest("hex");
 }
 
 // -----------------------------
@@ -73,8 +47,10 @@ let broadcastRequests = {};
 
 function serializeRequests(obj) {
   const clean = {};
+
   for (const id in obj) {
     const r = obj[id];
+
     clean[id] = {
       requestId: r.requestId,
       deviceId: r.deviceId,
@@ -86,6 +62,7 @@ function serializeRequests(obj) {
       broadcastId: r.broadcastId
     };
   }
+
   return clean;
 }
 
@@ -111,90 +88,14 @@ function loadState() {
 }
 
 // -----------------------------
-// Queue + Scheduling
-// -----------------------------
-let commandQueue = [];
-let isProcessingQueue = false;
-
-function enqueueCommand(fn, priority = 0, delay = 0) {
-  const job = {
-    fn,
-    priority,
-    executeAt: Date.now() + delay
-  };
-
-  commandQueue.push(job);
-  commandQueue.sort((a, b) => b.priority - a.priority);
-
-  processQueue();
-}
-
-function processQueue() {
-  if (isProcessingQueue) return;
-
-  isProcessingQueue = true;
-
-  const loop = () => {
-    if (commandQueue.length === 0) {
-      isProcessingQueue = false;
-      return;
-    }
-
-    const now = Date.now();
-    const job = commandQueue[0];
-
-    if (job.executeAt > now) {
-      setTimeout(loop, job.executeAt - now);
-      return;
-    }
-
-    commandQueue.shift();
-
-    try {
-      job.fn();
-    } catch (e) {
-      console.error("Queue job error:", e);
-    }
-
-    setImmediate(loop);
-  };
-
-  loop();
-}
-
-// -----------------------------
-// Rate Limiter
-// -----------------------------
-const RATE_LIMIT = 20;
-let tokens = RATE_LIMIT;
-let lastRefill = Date.now();
-
-function refillTokens() {
-  const now = Date.now();
-  const delta = (now - lastRefill) / 1000;
-
-  tokens += delta * RATE_LIMIT;
-  if (tokens > RATE_LIMIT) tokens = RATE_LIMIT;
-
-  lastRefill = now;
-}
-
-function canSend() {
-  refillTokens();
-
-  if (tokens >= 1) {
-    tokens -= 1;
-    return true;
-  }
-
-  return false;
-}
-
-// -----------------------------
 // Helpers
 // -----------------------------
 function genId(prefix) {
   return prefix + "_" + Math.random().toString(36).slice(2);
+}
+
+function genNonce() {
+  return crypto.randomBytes(8).toString("hex");
 }
 
 // -----------------------------
@@ -208,15 +109,11 @@ wss.on("connection", (ws) => {
       const data = JSON.parse(msg.toString());
 
       if (data.type === "ui.command") {
-        enqueueCommand(() => {
-          dispatchCommand(data.deviceId, data.commandId, data.params || {});
-        }, data.priority || 0, data.delay || 0);
+        dispatchCommand(data.deviceId, data.commandId, data.params || {});
       }
 
       if (data.type === "ui.broadcast") {
-        enqueueCommand(() => {
-          broadcastCommand(data.commandId, data.params || {});
-        }, data.priority || 0, data.delay || 0);
+        broadcastCommand(data.commandId, data.params || {});
       }
 
     } catch {}
@@ -241,7 +138,6 @@ udp.on("message", (msg, rinfo) => {
     }
 
     if (packet.type === "ack") {
-      if (!verifyPacket(packet)) return;
       handleAck(packet);
     }
 
@@ -304,41 +200,27 @@ function broadcastCommand(commandId, meta = {}) {
 }
 
 // -----------------------------
-// Send Packet (WITH SIGNATURE)
+// Send Packet (🔥 SECURITY هنا)
 // -----------------------------
 function sendPacket(device, request) {
-  const trySend = () => {
-    if (!canSend()) {
-      setTimeout(trySend, 50);
-      return;
-    }
-
-    const packet = {
-      requestId: request.requestId,
-      deviceId: request.deviceId,
-      commandId: request.commandId,
-      meta: request.meta,
-      ts: Date.now(),
-      nonce: genNonce()
-    };
-
-    packet.sig = signPacket(packet);
-
-    udp.send(
-      Buffer.from(JSON.stringify(packet)),
-      device.port,
-      device.ip
-    );
-
-    console.log(
-      "🚀 SEND:",
-      request.requestId,
-      "| retry:",
-      request.retries
-    );
+  const packet = {
+    requestId: request.requestId,
+    deviceId: request.deviceId,
+    commandId: request.commandId,
+    meta: request.meta,
+    ts: Date.now(),
+    nonce: genNonce()
   };
 
-  trySend();
+  packet.sig = signPacket(packet);
+
+  udp.send(
+    Buffer.from(JSON.stringify(packet)),
+    device.port,
+    device.ip
+  );
+
+  console.log("🚀 SEND:", request.requestId, "| retry:", request.retries);
 }
 
 // -----------------------------
@@ -459,9 +341,7 @@ setInterval(() => {
 }, 2000);
 
 // -----------------------------
-// Init
-// -----------------------------
 loadState();
 restoreTimers();
 
-console.log("🚀 Gateway Phase 6 (Security Layer) running");
+console.log("🚀 Gateway Phase 6 running");

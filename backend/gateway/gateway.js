@@ -13,7 +13,7 @@ const metrics = new Metrics(eventBus, registry);
 // -----------------------------
 // Security Config
 // -----------------------------
-const SECRET = "alm_super_secret_key"; // غيّرها لاحقًا
+const SECRET = "alm_shared_secret";
 const NONCE_WINDOW_MS = 10000; // 10 ثواني
 
 let usedNonces = new Map();

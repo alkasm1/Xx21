@@ -10,284 +10,347 @@ const Metrics = require("./metrics");
 const metrics = new Metrics(eventBus, registry);
 
 // -----------------------------
-// CONFIG
+// State Persistence
 // -----------------------------
 const STATE_FILE = "./state.json";
-const RATE_LIMIT_PER_SEC = 20;
 
-// -----------------------------
-// STATE
-// -----------------------------
 let pendingRequests = {};
 let broadcastRequests = {};
-let commandQueue = [];
-let lastSentTimestamps = [];
 
-// -----------------------------
-// LOAD / SAVE STATE
-// -----------------------------
 function saveState() {
-  fs.writeFileSync(
-    STATE_FILE,
-    JSON.stringify({ pendingRequests, broadcastRequests }, null, 2)
-  );
+const state = {
+pendingRequests,
+broadcastRequests
+};
+
+fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
 function loadState() {
-  if (fs.existsSync(STATE_FILE)) {
-    const data = JSON.parse(fs.readFileSync(STATE_FILE));
-    pendingRequests = data.pendingRequests || {};
-    broadcastRequests = data.broadcastRequests || {};
-    console.log("♻️ State restored");
-  }
-}
+if (!fs.existsSync(STATE_FILE)) return;
 
-loadState();
+const raw = fs.readFileSync(STATE_FILE);
+const state = JSON.parse(raw);
 
-// -----------------------------
-// UTILS
-// -----------------------------
-function genRequestId() {
-  return "req_" + Math.random().toString(36).slice(2);
-}
+pendingRequests = state.pendingRequests || {};
+broadcastRequests = state.broadcastRequests || {};
 
-function genBroadcastId() {
-  return "b_" + Math.random().toString(36).slice(2);
+console.log("♻️ State restored");
 }
 
 // -----------------------------
-// RATE LIMITER
+// Helpers
 // -----------------------------
-function canSend() {
-  const now = Date.now();
-  lastSentTimestamps = lastSentTimestamps.filter(t => now - t < 1000);
-
-  if (lastSentTimestamps.length < RATE_LIMIT_PER_SEC) {
-    lastSentTimestamps.push(now);
-    return true;
-  }
-
-  return false;
+function genId(prefix) {
+return prefix + "_" + Math.random().toString(36).slice(2);
 }
-
 // -----------------------------
-// QUEUE PROCESSOR
+// Queue + Scheduling (Phase 5.2)
 // -----------------------------
-setInterval(() => {
-  if (commandQueue.length === 0) return;
+let commandQueue = [];
+let isProcessingQueue = false;
 
-  if (!canSend()) return;
-
-  const job = commandQueue.shift();
-  executeCommand(job);
-
-}, 50);
-
-// -----------------------------
-// EXECUTION ENGINE
-// -----------------------------
-function executeCommand({ deviceId, commandId, meta, requestId, broadcastId }) {
-  const device = registry.get(deviceId);
-  if (!device) return;
-
-  const packet = { requestId, deviceId, commandId, meta };
-
-  udp.send(
-    Buffer.from(JSON.stringify(packet)),
-    device.port,
-    device.ip
-  );
-
-  const timeout = setTimeout(() => handleTimeout(requestId), 3000);
-
-  pendingRequests[requestId] = {
-    requestId,
-    deviceId,
-    commandId,
-    meta,
-    retries: 0,
-    state: "PENDING",
-    timeout,
-    broadcastId
-  };
-
-  eventBus.emit("command.sent", { requestId, deviceId, commandId });
-  saveState();
-}
-
-// -----------------------------
-// DISPATCH (Queue-based)
-// -----------------------------
-function dispatchCommand(deviceId, commandId, meta = {}, delay = 0, priority = 1) {
-  const requestId = genRequestId();
-
+function enqueueCommand(fn, priority = 0, delay = 0) {
   const job = {
-    deviceId,
-    commandId,
-    meta,
-    requestId,
-    priority
+    fn,
+    priority,
+    executeAt: Date.now() + delay
   };
 
-  setTimeout(() => {
-    commandQueue.push(job);
-    commandQueue.sort((a, b) => b.priority - a.priority);
-  }, delay);
+  commandQueue.push(job);
+
+  // ترتيب حسب الأولوية (الأعلى أولًا)
+  commandQueue.sort((a, b) => b.priority - a.priority);
+
+  processQueue();
 }
 
-// -----------------------------
-// BROADCAST
-// -----------------------------
-function broadcastCommand(commandId, meta = {}) {
-  const devices = registry.getAll();
-  const broadcastId = genBroadcastId();
+function processQueue() {
+  if (isProcessingQueue) return;
 
-  broadcastRequests[broadcastId] = {
-    broadcastId,
-    commandId,
-    devices: {},
-    status: "PENDING"
+  isProcessingQueue = true;
+
+  const loop = () => {
+    if (commandQueue.length === 0) {
+      isProcessingQueue = false;
+      return;
+    }
+
+    const now = Date.now();
+    const job = commandQueue[0];
+
+    if (job.executeAt > now) {
+      setTimeout(loop, job.executeAt - now);
+      return;
+    }
+
+    commandQueue.shift();
+
+    try {
+      job.fn();
+    } catch (e) {
+      console.error("Queue job error:", e);
+    }
+
+    setImmediate(loop);
   };
 
-  devices.forEach(d => {
-    const requestId = genRequestId();
-
-    broadcastRequests[broadcastId].devices[d.deviceId] = "PENDING";
-
-    commandQueue.push({
-      deviceId: d.deviceId,
-      commandId,
-      meta,
-      requestId,
-      broadcastId,
-      priority: 1
-    });
-  });
-
-  saveState();
+  loop();
 }
 
 // -----------------------------
-// ACK HANDLER
-// -----------------------------
-udp.on("message", (msg, rinfo) => {
-  try {
-    const packet = JSON.parse(msg.toString());
-
-    if (packet.type === "ack") {
-      const req = pendingRequests[packet.requestId];
-      if (!req) return;
-
-      clearTimeout(req.timeout);
-
-      req.state = "COMPLETED";
-
-      eventBus.emit("command.completed", req);
-
-      // Broadcast tracking
-      if (req.broadcastId) {
-        const b = broadcastRequests[req.broadcastId];
-        if (b) {
-          b.devices[req.deviceId] = "DONE";
-
-          const allDone = Object.values(b.devices).every(v => v !== "PENDING");
-
-          if (allDone) {
-            b.status = "COMPLETED";
-            console.log("📊 BROADCAST DONE:", b.broadcastId);
-          }
-        }
-      }
-
-      delete pendingRequests[packet.requestId];
-      saveState();
-    }
-
-  } catch {}
-});
-
-// -----------------------------
-// TIMEOUT + RETRY
-// -----------------------------
-function handleTimeout(requestId) {
-  const req = pendingRequests[requestId];
-  if (!req) return;
-
-  if (req.retries >= 3) {
-    req.state = "FAILED";
-
-    if (req.broadcastId) {
-      const b = broadcastRequests[req.broadcastId];
-      if (b) {
-        b.devices[req.deviceId] = "FAILED";
-      }
-    }
-
-    console.log("❌ FAILED:", requestId);
-
-    delete pendingRequests[requestId];
-    saveState();
-    return;
-  }
-
-  req.retries++;
-  req.state = "RETRYING";
-
-  const delay = Math.pow(2, req.retries) * 500 + Math.random() * 200;
-
-  setTimeout(() => {
-    commandQueue.push({
-      deviceId: req.deviceId,
-      commandId: req.commandId,
-      meta: req.meta,
-      requestId: req.requestId,
-      broadcastId: req.broadcastId,
-      priority: 2
-    });
-  }, delay);
-
-  saveState();
-}
-
-// -----------------------------
-// WEBSOCKET
+// WebSocket
 // -----------------------------
 const wss = new WebSocket.Server({ port: 5001 });
 
 wss.on("connection", (ws) => {
-  ws.on("message", (msg) => {
-    const data = JSON.parse(msg.toString());
+ws.on("message", (msg) => {
+try {
+const data = JSON.parse(msg.toString());
 
-    if (data.type === "ui.command") {
-      dispatchCommand(data.deviceId, data.commandId, data.params, data.delay || 0, data.priority || 1);
-    }
+  if (data.type === "ui.command") {
+  enqueueCommand(() => {
+    dispatchCommand(
+      data.deviceId,
+      data.commandId,
+      data.params || {}
+    );
+  }, data.priority || 0, data.delay || 0);
+}
 
-    if (data.type === "ui.broadcast") {
-      broadcastCommand(data.commandId, data.params);
-    }
-  });
+if (data.type === "ui.broadcast") {
+  enqueueCommand(() => {
+    broadcastCommand(
+      data.commandId,
+      data.params || {}
+    );
+  }, data.priority || 0, data.delay || 0);
+}
+
+} catch (e) {}
+
+});
 });
 
 // -----------------------------
-// SNAPSHOT
+// UDP Listener
+// -----------------------------
+udp.on("message", (msg, rinfo) => {
+try {
+const packet = JSON.parse(msg.toString());
+
+if (packet.type === "heartbeat") {  
+  registry.update(packet.deviceId, {  
+    deviceId: packet.deviceId,  
+    ip: rinfo.address,  
+    port: rinfo.port,  
+    lastSeen: Date.now(),  
+    status: "online"  
+  });  
+}  
+
+if (packet.type === "ack") {  
+  handleAck(packet);  
+}
+
+} catch {}
+});
+
+udp.bind(5000);
+
+// -----------------------------
+// Send Command
+// -----------------------------
+function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
+const device = registry.get(deviceId);
+if (!device) return;
+
+const requestId = genId("req");
+
+const request = {
+requestId,
+deviceId,
+commandId,
+meta,
+retries: 0,
+maxRetries: 3,
+state: "PENDING",
+broadcastId
+};
+
+pendingRequests[requestId] = request;
+
+sendPacket(device, request);
+scheduleTimeout(requestId);
+
+eventBus.emit("command.sent", request);
+saveState();
+}
+
+// -----------------------------
+// Broadcast
+// -----------------------------
+function broadcastCommand(commandId, meta = {}) {
+const devices = registry.getAll();
+const broadcastId = genId("bc");
+
+broadcastRequests[broadcastId] = {
+broadcastId,
+commandId,
+devices: {},
+status: "PENDING"
+};
+
+console.log("📡 BROADCAST START:", broadcastId);
+
+devices.forEach((d) => {
+broadcastRequests[broadcastId].devices[d.deviceId] = "PENDING";
+dispatchCommand(d.deviceId, commandId, meta, broadcastId);
+});
+
+saveState();
+}
+
+// -----------------------------
+// Send Packet
+// -----------------------------
+function sendPacket(device, request) {
+const packet = {
+requestId: request.requestId,
+deviceId: request.deviceId,
+commandId: request.commandId,
+meta: request.meta
+};
+
+udp.send(
+Buffer.from(JSON.stringify(packet)),
+device.port,
+device.ip
+);
+
+console.log("🚀 SEND:", request.requestId, "| retry:", request.retries);
+}
+
+// -----------------------------
+// ACK Handling
+// -----------------------------
+function handleAck(packet) {
+const request = pendingRequests[packet.requestId];
+if (!request) return;
+
+request.state = "COMPLETED";
+
+console.log("✅ ACK:", packet.requestId);
+
+clearTimeout(request.timeout);
+delete pendingRequests[packet.requestId];
+
+if (request.broadcastId) {
+updateBroadcast(request.broadcastId, request.deviceId, "OK");
+}
+
+eventBus.emit("command.completed", request);
+saveState();
+}
+
+// -----------------------------
+// Timeout + Retry
+// -----------------------------
+function scheduleTimeout(requestId) {
+const request = pendingRequests[requestId];
+if (!request) return;
+
+request.timeout = setTimeout(() => {
+handleTimeout(requestId);
+}, 2000);
+}
+
+function handleTimeout(requestId) {
+const request = pendingRequests[requestId];
+if (!request) return;
+
+if (request.retries >= request.maxRetries) {
+console.log("❌ FAILED:", requestId);
+
+request.state = "FAILED";  
+delete pendingRequests[requestId];  
+
+if (request.broadcastId) {  
+  updateBroadcast(request.broadcastId, request.deviceId, "FAILED");  
+}  
+
+eventBus.emit("command.failed", request);  
+saveState();  
+return;
+
+}
+
+request.retries++;
+
+const device = registry.get(request.deviceId);
+if (!device) return;
+
+console.log("🔁 RETRY:", requestId, "|", request.retries);
+
+sendPacket(device, request);
+scheduleTimeout(requestId);
+
+saveState();
+}
+
+// -----------------------------
+// Broadcast Update
+// -----------------------------
+function updateBroadcast(broadcastId, deviceId, status) {
+const bc = broadcastRequests[broadcastId];
+if (!bc) return;
+
+bc.devices[deviceId] = status;
+
+const states = Object.values(bc.devices);
+
+if (states.every(s => s === "OK")) {
+bc.status = "COMPLETED";
+} else if (states.every(s => s !== "PENDING")) {
+bc.status = "PARTIAL";
+}
+
+if (bc.status !== "PENDING") {
+console.log("📊 BROADCAST DONE:", broadcastId, "|", bc.status);
+}
+
+saveState();
+}
+
+// -----------------------------
+// Restore After Restart
+// -----------------------------
+function restoreTimers() {
+Object.values(pendingRequests).forEach(req => {
+scheduleTimeout(req.requestId);
+});
+}
+
+// -----------------------------
+// Snapshot
 // -----------------------------
 setInterval(() => {
-  const snapshot = {
-    type: "snapshot",
-    devices: registry.getAll(),
-    metrics: metrics.snapshot(),
-    pendingRequests,
-    broadcastRequests
-  };
+const snapshot = {
+type: "snapshot",
+devices: registry.getAll(),
+metrics: metrics.snapshot(),
+broadcasts: broadcastRequests
+};
 
-  wss.clients.forEach(ws => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(snapshot));
-    }
-  });
-
+wss.clients.forEach(ws => {
+if (ws.readyState === WebSocket.OPEN) {
+ws.send(JSON.stringify(snapshot));
+}
+});
 }, 2000);
 
 // -----------------------------
-udp.bind(5000);
-console.log("🚀 Gateway running");
+// Init
+// -----------------------------
+loadState();
+restoreTimers();

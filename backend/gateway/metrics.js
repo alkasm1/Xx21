@@ -11,31 +11,55 @@ class Metrics {
 
     this.execTimes = {}; // commandId -> [times]
 
-    // Events
+    // -----------------------------
+    // SENT
+    // -----------------------------
     eventBus.on("command.sent", ({ commandId }) => {
       this.commands_sent++;
     });
 
-    eventBus.on("device.ack", ({ commandId, execMs }) => {
+    // -----------------------------
+    // COMPLETED (بديل device.ack)
+    // -----------------------------
+    eventBus.on("command.completed", (req) => {
       this.commands_ok++;
+
+      const commandId = req.commandId;
+      const execMs = req.execMs || 0;
 
       if (!this.execTimes[commandId]) {
         this.execTimes[commandId] = [];
       }
 
-      this.execTimes[commandId].push(execMs || 0);
+      this.execTimes[commandId].push(execMs);
     });
 
+    // -----------------------------
+    // FAILED
+    // -----------------------------
+    eventBus.on("command.failed", () => {
+      this.commands_fail++;
+    });
+
+    // -----------------------------
+    // TIMEOUT (اختياري إذا ما زال مستخدم)
+    // -----------------------------
     eventBus.on("command.timeout", () => {
       this.timeouts++;
     });
   }
 
+  // -----------------------------
+  // AVG
+  // -----------------------------
   _avg(arr) {
     if (!arr || arr.length === 0) return 0;
     return arr.reduce((a, b) => a + b, 0) / arr.length;
   }
 
+  // -----------------------------
+  // SNAPSHOT
+  // -----------------------------
   snapshot() {
     const avgexecms = {};
 

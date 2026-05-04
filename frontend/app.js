@@ -1,118 +1,68 @@
-// frontend/app.js
+const ws = new WebSocket("ws://localhost:5001");
+
+const metricsEl = document.getElementById("metrics");
+const devicesEl = document.getElementById("devices");
+const logsEl = document.getElementById("logs");
+const statusEl = document.getElementById("wsStatus");
+
+let devicesMap = {};
 
 // -----------------------------
-// WebSocket
+// WS Status
 // -----------------------------
-const ws = new WebSocket("ws://127.0.0.1:5001");
-
 ws.onopen = () => {
-  console.log("✅ WS Connected");
-  setWsStatus(true);
+  statusEl.textContent = "WS: ✅ Connected";
 };
 
 ws.onclose = () => {
-  console.log("❌ WS Disconnected");
-  setWsStatus(false);
-};
-
-ws.onerror = (err) => {
-  console.error("WS Error:", err);
+  statusEl.textContent = "WS: ❌ Disconnected";
 };
 
 // -----------------------------
-// Helpers
-// -----------------------------
-function log(msg) {
-  const logs = document.getElementById("logs");
-  logs.textContent += msg + "\n";
-  logs.scrollTop = logs.scrollHeight;
-}
-
-function setWsStatus(connected) {
-  const el = document.getElementById("wsStatus");
-  if (connected) {
-    el.textContent = "WS: ✅ Connected";
-    el.style.background = "#0a0";
-  } else {
-    el.textContent = "WS: ❌ Disconnected";
-    el.style.background = "#a00";
-  }
-}
-
-// -----------------------------
-// Core Send
-// -----------------------------
-function send(commandId, deviceId, params = {}) {
-  const payload = {
-    type: "ui.command",
-    deviceId,
-    commandId,
-    params
-  };
-
-  console.log("📤 SEND:", payload);
-  log(`📤 SEND → ${deviceId} cmd=${commandId}`);
-
-  ws.send(JSON.stringify(payload));
-}
-
-// -----------------------------
-// Device Commands (Expose globally)
-// -----------------------------
-window.setFreq = function (id) {
-  send(17, id, {
-    freqMHz: 433,
-    bandwidth: 20,
-    txPower: 10
-  });
-};
-
-window.reboot = function (id) {
-  send(18, id, { delay: 1 });
-};
-
-// -----------------------------
-// Broadcast (Bind to buttons)
-// -----------------------------
-document.getElementById("btn-bc-setfreq").onclick = () => {
-  const payload = {
-    type: "ui.broadcast",
-    commandId: 17,
-    params: {
-      freqMHz: 433,
-      bandwidth: 20,
-      txPower: 10
-    }
-  };
-
-  console.log("📡 BROADCAST SET_FREQ");
-  log("📡 BROADCAST SET_FREQ");
-
-  ws.send(JSON.stringify(payload));
-};
-
-document.getElementById("btn-bc-reboot").onclick = () => {
-  const payload = {
-    type: "ui.broadcast",
-    commandId: 18,
-    params: { delay: 1 }
-  };
-
-  console.log("📡 BROADCAST REBOOT");
-  log("📡 BROADCAST REBOOT");
-
-  ws.send(JSON.stringify(payload));
-};
-
-// -----------------------------
-// Handle Incoming Snapshots
+// Message Handler
 // -----------------------------
 ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
+  const msg = JSON.parse(event.data);
 
-  if (data.type === "snapshot") {
-    renderMetrics(data.metrics);
-    renderDevices(data.devices);
+  // -----------------------------
+  // Snapshot
+  // -----------------------------
+  if (msg.type === "snapshot") {
+    renderMetrics(msg.metrics);
+    renderDevices(msg.devices);
+  }
+
+  // -----------------------------
+  // Command Sent
+  // -----------------------------
+  if (msg.type === "cmd_sent") {
+    addLog(`📤 cmd=${msg.commandId} → ${msg.deviceId}`);
+  }
+
+  // -----------------------------
+  // Command Completed
+  // -----------------------------
+  if (msg.type === "cmd_completed") {
+    addLog(`✅ cmd=${msg.commandId} → ${msg.deviceId} (${msg.execMs}ms)`);
+
+    updateDevice(msg.deviceId, {
+      lastCmd: msg.commandId,
+      execTime: msg.execMs
+    });
+  }
+
+  // -----------------------------
+  // Command Failed
+  // -----------------------------
+  if (msg.type === "cmd_failed") {
+    addLog(`❌ cmd=${msg.commandId} → ${msg.deviceId}`);
+  }
+
+  // -----------------------------
+  // Broadcast Done
+  // -----------------------------
+  if (msg.type === "broadcast_done") {
+    addLog(`📡 broadcast ${msg.broadcastId} → ${msg.status}`);
   }
 };
 
@@ -120,32 +70,85 @@ ws.onmessage = (event) => {
 // Render Metrics
 // -----------------------------
 function renderMetrics(metrics) {
-  document.getElementById("metrics").textContent =
-    JSON.stringify(metrics, null, 2);
+  metricsEl.textContent = JSON.stringify(metrics, null, 2);
 }
 
 // -----------------------------
-// Render Devices Table
+// Render Devices
 // -----------------------------
 function renderDevices(devices) {
-  const tbody = document.getElementById("devices");
-  tbody.innerHTML = "";
+  devicesEl.innerHTML = "";
 
-  devices.forEach((d) => {
-    const tr = document.createElement("tr");
+  devices.forEach(d => {
+    devicesMap[d.deviceId] = d;
 
-    tr.innerHTML = `
+    const row = document.createElement("tr");
+    row.setAttribute("data-id", d.deviceId);
+
+    row.innerHTML = `
       <td>${d.deviceId}</td>
       <td>${d.status}</td>
       <td>${new Date(d.lastSeen).toLocaleTimeString()}</td>
-      <td>-</td>
-      <td>-</td>
+      <td class="lastCmd">-</td>
+      <td class="execTime">-</td>
       <td>
-        <button onclick="setFreq(${d.deviceId})">Set Freq</button>
-        <button onclick="reboot(${d.deviceId})">Reboot</button>
+        <button onclick="sendCmd(${d.deviceId},17)">SetFreq</button>
+        <button onclick="sendCmd(${d.deviceId},18)">Reboot</button>
       </td>
     `;
 
-    tbody.appendChild(tr);
+    devicesEl.appendChild(row);
   });
 }
+
+// -----------------------------
+// Update Device Row
+// -----------------------------
+function updateDevice(deviceId, data) {
+  const row = document.querySelector(`[data-id="${deviceId}"]`);
+  if (!row) return;
+
+  if (data.lastCmd !== undefined) {
+    row.querySelector(".lastCmd").textContent = data.lastCmd;
+  }
+
+  if (data.execTime !== undefined) {
+    row.querySelector(".execTime").textContent = data.execTime + " ms";
+  }
+}
+
+// -----------------------------
+// Logs
+// -----------------------------
+function addLog(text) {
+  logsEl.textContent += text + "\n";
+  logsEl.scrollTop = logsEl.scrollHeight;
+}
+
+// -----------------------------
+// Commands
+// -----------------------------
+function sendCmd(deviceId, commandId) {
+  ws.send(JSON.stringify({
+    type: "ui.command",
+    deviceId,
+    commandId
+  }));
+}
+
+// -----------------------------
+// Broadcast Buttons
+// -----------------------------
+document.getElementById("btn-bc-setfreq").onclick = () => {
+  ws.send(JSON.stringify({
+    type: "ui.broadcast",
+    commandId: 17
+  }));
+};
+
+document.getElementById("btn-bc-reboot").onclick = () => {
+  ws.send(JSON.stringify({
+    type: "ui.broadcast",
+    commandId: 18
+  }));
+};

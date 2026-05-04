@@ -1,5 +1,6 @@
 const dgram = require("dgram");
 const fs = require("fs");
+const crypto = require("crypto");
 const udp = dgram.createSocket("udp4");
 const WebSocket = require("ws");
 
@@ -8,6 +9,59 @@ const registry = require("./device_registry");
 const Metrics = require("./metrics");
 
 const metrics = new Metrics(eventBus, registry);
+
+// -----------------------------
+// Security Config
+// -----------------------------
+const SECRET = "alm_super_secret_key"; // غيّرها لاحقًا
+const NONCE_WINDOW_MS = 10000; // 10 ثواني
+
+let usedNonces = new Map();
+
+function genNonce() {
+  return crypto.randomBytes(8).toString("hex");
+}
+
+function signPacket(packet) {
+  const payload = `${packet.requestId}|${packet.deviceId}|${packet.commandId}|${packet.ts}|${packet.nonce}`;
+  return crypto.createHmac("sha256", SECRET).update(payload).digest("hex");
+}
+
+function verifyPacket(packet) {
+  if (!packet.sig || !packet.ts || !packet.nonce) return false;
+
+  const now = Date.now();
+
+  // تحقق من الزمن (anti replay)
+  if (Math.abs(now - packet.ts) > NONCE_WINDOW_MS) {
+    console.log("⛔ Timestamp expired");
+    return false;
+  }
+
+  // تحقق من nonce
+  if (usedNonces.has(packet.nonce)) {
+    console.log("⛔ Replay detected:", packet.nonce);
+    return false;
+  }
+
+  const expected = signPacket(packet);
+
+  if (expected !== packet.sig) {
+    console.log("⛔ Invalid signature");
+    return false;
+  }
+
+  usedNonces.set(packet.nonce, now);
+
+  // تنظيف nonces القديمة
+  for (const [n, t] of usedNonces) {
+    if (now - t > NONCE_WINDOW_MS) {
+      usedNonces.delete(n);
+    }
+  }
+
+  return true;
+}
 
 // -----------------------------
 // State Persistence
@@ -19,10 +73,8 @@ let broadcastRequests = {};
 
 function serializeRequests(obj) {
   const clean = {};
-
   for (const id in obj) {
     const r = obj[id];
-
     clean[id] = {
       requestId: r.requestId,
       deviceId: r.deviceId,
@@ -34,7 +86,6 @@ function serializeRequests(obj) {
       broadcastId: r.broadcastId
     };
   }
-
   return clean;
 }
 
@@ -112,9 +163,9 @@ function processQueue() {
 }
 
 // -----------------------------
-// Rate Limiter (Token Bucket)
+// Rate Limiter
 // -----------------------------
-const RATE_LIMIT = 20; // packets per second
+const RATE_LIMIT = 20;
 let tokens = RATE_LIMIT;
 let lastRefill = Date.now();
 
@@ -138,6 +189,7 @@ function canSend() {
 
   return false;
 }
+
 // -----------------------------
 // Helpers
 // -----------------------------
@@ -167,7 +219,7 @@ wss.on("connection", (ws) => {
         }, data.priority || 0, data.delay || 0);
       }
 
-    } catch (e) {}
+    } catch {}
   });
 });
 
@@ -189,6 +241,7 @@ udp.on("message", (msg, rinfo) => {
     }
 
     if (packet.type === "ack") {
+      if (!verifyPacket(packet)) return;
       handleAck(packet);
     }
 
@@ -251,12 +304,12 @@ function broadcastCommand(commandId, meta = {}) {
 }
 
 // -----------------------------
-// Send Packet
+// Send Packet (WITH SIGNATURE)
 // -----------------------------
 function sendPacket(device, request) {
   const trySend = () => {
     if (!canSend()) {
-      setTimeout(trySend, 50); // retry after 50ms
+      setTimeout(trySend, 50);
       return;
     }
 
@@ -264,8 +317,12 @@ function sendPacket(device, request) {
       requestId: request.requestId,
       deviceId: request.deviceId,
       commandId: request.commandId,
-      meta: request.meta
+      meta: request.meta,
+      ts: Date.now(),
+      nonce: genNonce()
     };
+
+    packet.sig = signPacket(packet);
 
     udp.send(
       Buffer.from(JSON.stringify(packet)),
@@ -277,15 +334,12 @@ function sendPacket(device, request) {
       "🚀 SEND:",
       request.requestId,
       "| retry:",
-      request.retries,
-      "| tokens:",
-      tokens.toFixed(2)
+      request.retries
     );
   };
 
   trySend();
 }
-
 
 // -----------------------------
 // ACK
@@ -410,4 +464,4 @@ setInterval(() => {
 loadState();
 restoreTimers();
 
-console.log("🚀 Gateway Phase 5.2 running");
+console.log("🚀 Gateway Phase 6 (Security Layer) running");

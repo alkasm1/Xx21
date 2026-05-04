@@ -1,5 +1,3 @@
-// backend/gateway/gateway.js
-
 const dgram = require("dgram");
 const udp = dgram.createSocket("udp4");
 const WebSocket = require("ws");
@@ -8,13 +6,14 @@ const eventBus = require("./event_bus");
 const registry = require("./device_registry");
 const Metrics = require("./metrics");
 
+const { saveState, loadState } = require("./storage");
+
 const metrics = new Metrics(eventBus, registry);
 
 // -----------------------------
-// State
+// Load State
 // -----------------------------
-let pendingRequests = {};
-let broadcastRequests = {};
+let { pendingRequests, broadcastRequests } = loadState();
 
 // -----------------------------
 // Config
@@ -75,6 +74,17 @@ udp.on("message", (msg, rinfo) => {
 udp.bind(5000);
 
 // -----------------------------
+// Restore Timeouts after restart
+// -----------------------------
+Object.keys(pendingRequests).forEach((requestId) => {
+  const request = pendingRequests[requestId];
+
+  console.log(`♻️ Restoring request: ${requestId}`);
+
+  request.timeout = scheduleTimeout(requestId, request.retries || 0);
+});
+
+// -----------------------------
 // Helpers
 // -----------------------------
 function genRequestId() {
@@ -105,6 +115,8 @@ function dispatchCommand(deviceId, commandId, meta = {}) {
   pendingRequests[requestId] = request;
 
   sendPacket(request);
+
+  saveState(pendingRequests, broadcastRequests);
 }
 
 // -----------------------------
@@ -145,6 +157,8 @@ function broadcastCommand(commandId, meta = {}) {
   });
 
   console.log(`📡 BROADCAST START: ${broadcastId}`);
+
+  saveState(pendingRequests, broadcastRequests);
 }
 
 // -----------------------------
@@ -187,11 +201,7 @@ function sendPacket(request) {
     device.ip
   );
 
-  eventBus.emit("command.sent", {
-    requestId: request.requestId,
-    deviceId: request.deviceId,
-    commandId: request.commandId
-  });
+  eventBus.emit("command.sent", request);
 }
 
 // -----------------------------
@@ -201,10 +211,7 @@ function handleAck(packet) {
   const { requestId, deviceId, commandId, execMs } = packet;
 
   const request = pendingRequests[requestId];
-  if (!request) {
-    console.log("⚠️ Unknown ACK:", requestId);
-    return;
-  }
+  if (!request) return;
 
   clearTimeout(request.timeout);
   request.state = "COMPLETED";
@@ -213,7 +220,6 @@ function handleAck(packet) {
     `✅ ACK: device=${deviceId} | cmd=${commandId} | req=${requestId}`
   );
 
-  // Broadcast tracking
   if (request.broadcastId) {
     const group = broadcastRequests[request.broadcastId];
     if (group) {
@@ -230,6 +236,8 @@ function handleAck(packet) {
   });
 
   delete pendingRequests[requestId];
+
+  saveState(pendingRequests, broadcastRequests);
 }
 
 // -----------------------------
@@ -258,7 +266,6 @@ function handleTimeout(requestId) {
       `❌ FAILED: device=${request.deviceId} | cmd=${request.commandId} | req=${requestId}`
     );
 
-    // Broadcast tracking
     if (request.broadcastId) {
       const group = broadcastRequests[request.broadcastId];
       if (group) {
@@ -267,13 +274,11 @@ function handleTimeout(requestId) {
       }
     }
 
-    eventBus.emit("command.timeout", {
-      requestId,
-      deviceId: request.deviceId,
-      commandId: request.commandId
-    });
+    eventBus.emit("command.timeout", request);
 
     delete pendingRequests[requestId];
+
+    saveState(pendingRequests, broadcastRequests);
     return;
   }
 
@@ -287,6 +292,8 @@ function handleTimeout(requestId) {
   sendPacket(request);
 
   request.timeout = scheduleTimeout(requestId, request.retries);
+
+  saveState(pendingRequests, broadcastRequests);
 }
 
 // -----------------------------
@@ -319,6 +326,8 @@ function evaluateBroadcast(group) {
   );
 
   eventBus.emit("broadcast.completed", group);
+
+  saveState(pendingRequests, broadcastRequests);
 }
 
 // -----------------------------

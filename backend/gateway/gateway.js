@@ -10,7 +10,11 @@ const Metrics = require("./metrics");
 
 const metrics = new Metrics(eventBus, registry);
 
+// -----------------------------
+// State
+// -----------------------------
 let pendingRequests = {};
+let broadcastRequests = {};
 
 // -----------------------------
 // Config
@@ -38,7 +42,9 @@ wss.on("connection", (ws) => {
         broadcastCommand(data.commandId, data.params || {});
       }
 
-    } catch {}
+    } catch (e) {
+      console.error("WS error:", e);
+    }
   });
 });
 
@@ -75,8 +81,12 @@ function genRequestId() {
   return "req_" + Math.random().toString(36).slice(2);
 }
 
+function genBroadcastId() {
+  return "bcast_" + Math.random().toString(36).slice(2);
+}
+
 // -----------------------------
-// Dispatch
+// Dispatch Single
 // -----------------------------
 function dispatchCommand(deviceId, commandId, meta = {}) {
   const device = registry.get(deviceId);
@@ -84,7 +94,13 @@ function dispatchCommand(deviceId, commandId, meta = {}) {
 
   const requestId = genRequestId();
 
-  const request = createRequest(requestId, deviceId, commandId, meta);
+  const request = createRequest(
+    requestId,
+    deviceId,
+    commandId,
+    meta,
+    null
+  );
 
   pendingRequests[requestId] = request;
 
@@ -96,27 +112,51 @@ function dispatchCommand(deviceId, commandId, meta = {}) {
 // -----------------------------
 function broadcastCommand(commandId, meta = {}) {
   const devices = registry.getAll();
+  const broadcastId = genBroadcastId();
+
+  const group = {
+    broadcastId,
+    commandId,
+    meta,
+    createdAt: Date.now(),
+    status: "IN_PROGRESS",
+    devices: {},
+    completedAt: null
+  };
+
+  broadcastRequests[broadcastId] = group;
 
   devices.forEach((d) => {
     const requestId = genRequestId();
 
-    const request = createRequest(requestId, d.deviceId, commandId, meta);
+    group.devices[d.deviceId] = "PENDING";
+
+    const request = createRequest(
+      requestId,
+      d.deviceId,
+      commandId,
+      meta,
+      broadcastId
+    );
 
     pendingRequests[requestId] = request;
 
     sendPacket(request);
   });
+
+  console.log(`📡 BROADCAST START: ${broadcastId}`);
 }
 
 // -----------------------------
 // Request Factory
 // -----------------------------
-function createRequest(requestId, deviceId, commandId, meta) {
+function createRequest(requestId, deviceId, commandId, meta, broadcastId) {
   return {
     requestId,
     deviceId,
     commandId,
     meta,
+    broadcastId,
     retries: 0,
     state: "PENDING",
     timeout: scheduleTimeout(requestId, 0)
@@ -124,7 +164,7 @@ function createRequest(requestId, deviceId, commandId, meta) {
 }
 
 // -----------------------------
-// Send
+// Send Packet
 // -----------------------------
 function sendPacket(request) {
   const device = registry.get(request.deviceId);
@@ -167,12 +207,20 @@ function handleAck(packet) {
   }
 
   clearTimeout(request.timeout);
-
   request.state = "COMPLETED";
 
   console.log(
     `✅ ACK: device=${deviceId} | cmd=${commandId} | req=${requestId}`
   );
+
+  // Broadcast tracking
+  if (request.broadcastId) {
+    const group = broadcastRequests[request.broadcastId];
+    if (group) {
+      group.devices[deviceId] = "COMPLETED";
+      evaluateBroadcast(group);
+    }
+  }
 
   eventBus.emit("command.completed", {
     requestId,
@@ -195,7 +243,7 @@ function scheduleTimeout(requestId, retryCount) {
 }
 
 // -----------------------------
-// Timeout Handler (Retry Engine)
+// Timeout Handler
 // -----------------------------
 function handleTimeout(requestId) {
   const request = pendingRequests[requestId];
@@ -209,6 +257,15 @@ function handleTimeout(requestId) {
     console.log(
       `❌ FAILED: device=${request.deviceId} | cmd=${request.commandId} | req=${requestId}`
     );
+
+    // Broadcast tracking
+    if (request.broadcastId) {
+      const group = broadcastRequests[request.broadcastId];
+      if (group) {
+        group.devices[request.deviceId] = "FAILED";
+        evaluateBroadcast(group);
+      }
+    }
 
     eventBus.emit("command.timeout", {
       requestId,
@@ -233,13 +290,46 @@ function handleTimeout(requestId) {
 }
 
 // -----------------------------
+// Broadcast Evaluation
+// -----------------------------
+function evaluateBroadcast(group) {
+  const states = Object.values(group.devices);
+
+  const allDone = states.every(
+    s => s === "COMPLETED" || s === "FAILED"
+  );
+
+  if (!allDone) return;
+
+  const success = states.filter(s => s === "COMPLETED").length;
+  const failed = states.filter(s => s === "FAILED").length;
+
+  if (success === states.length) {
+    group.status = "COMPLETED";
+  } else if (failed === states.length) {
+    group.status = "FAILED";
+  } else {
+    group.status = "PARTIAL";
+  }
+
+  group.completedAt = Date.now();
+
+  console.log(
+    `📊 BROADCAST DONE: ${group.broadcastId} | status=${group.status}`
+  );
+
+  eventBus.emit("broadcast.completed", group);
+}
+
+// -----------------------------
 // Snapshot
 // -----------------------------
 setInterval(() => {
   const snapshot = {
     type: "snapshot",
     devices: registry.getAll(),
-    metrics: metrics.snapshot()
+    metrics: metrics.snapshot(),
+    broadcasts: broadcastRequests
   };
 
   wss.clients.forEach(ws => {

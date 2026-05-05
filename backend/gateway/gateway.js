@@ -185,9 +185,7 @@ function genId() {
 // -----------------------------
 // WebSocket (UI)
 // -----------------------------
-const wss = new WebSocket.Server({
-  port: 5001
-});
+const wss = new WebSocket.Server({ port: 5001 });
 
 function sendToUI(obj) {
   wss.clients.forEach(ws => {

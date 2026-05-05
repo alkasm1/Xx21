@@ -9,11 +9,12 @@ const wsStatus = document.getElementById("wsStatus");
 const metricsEl = document.getElementById("metrics");
 const devicesEl = document.getElementById("devices");
 const logsEl = document.getElementById("logs");
+const broadcastsEl = document.getElementById("broadcasts"); // NEW
 
 // -----------------------------
-// Local State (مهم جدًا)
+// Local State
 // -----------------------------
-let devicesMap = {};   // deviceId -> state
+let devicesMap = {};   
 let metricsState = {
   commands_ok: 0,
   commands_fail: 0
@@ -44,6 +45,9 @@ ws.onmessage = (event) => {
   if (msg.type === "snapshot") {
     renderMetrics(msg.metrics);
     renderDevices(msg.devices);
+
+    // NEW: عرض broadcast في الواجهة
+    broadcastsEl.textContent = JSON.stringify(msg.broadcasts, null, 2);
   }
 
   // =============================
@@ -70,10 +74,10 @@ ws.onmessage = (event) => {
   }
 
   // =============================
-  // BROADCAST DONE
+  // BROADCAST DONE (NEW)
   // =============================
   if (msg.type === "broadcast_done") {
-    addLog(`📡 Broadcast ${msg.broadcastId} → ${msg.status}`);
+    addLog(`📡 BROADCAST ${msg.broadcastId} → ${msg.status}`);
   }
 };
 

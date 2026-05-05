@@ -186,7 +186,6 @@ function genId() {
 // WebSocket (UI)
 // --------------------------
 const wss = new WebSocket.Server({
-  host: "0.0.0.0",   // 🔥 أهم سطر
   port: 5001
 });
 

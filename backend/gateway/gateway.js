@@ -13,24 +13,36 @@ const Metrics = require("./metrics");
 const metrics = new Metrics(eventBus, registry);
 
 // -----------------------------
-// SECURITY
+// CONFIG (Security)
 // -----------------------------
 const SECRET = "alm_secret_key";
 
+// -----------------------------
+// Helpers (Security)
+// -----------------------------
 function stableStringify(obj) {
-  const keys = Object.keys(obj).sort();
-  const sorted = {};
-  keys.forEach(k => sorted[k] = obj[k]);
-  return JSON.stringify(sorted);
+  return JSON.stringify(Object.keys(obj).sort().reduce((o, k) => {
+    if (k === "sig") return o;
+    o[k] = obj[k];
+    return o;
+  }, {}));
 }
 
 function signPacket(packet) {
-  const clone = { ...packet };
-  delete clone.sig;
   return crypto
     .createHmac("sha256", SECRET)
-    .update(stableStringify(clone))
+    .update(stableStringify(packet))
     .digest("hex");
+}
+
+function verifyPacket(packet) {
+  const sig = packet.sig;
+  const expected = signPacket(packet);
+  return sig === expected;
+}
+
+function genNonce() {
+  return crypto.randomBytes(8).toString("hex");
 }
 
 // -----------------------------
@@ -46,6 +58,7 @@ function serializeRequests(obj) {
 
   for (const id in obj) {
     const r = obj[id];
+
     clean[id] = {
       requestId: r.requestId,
       deviceId: r.deviceId,
@@ -89,15 +102,13 @@ let commandQueue = [];
 let isProcessingQueue = false;
 
 function enqueueCommand(fn, priority = 0, delay = 0) {
-  const job = {
+  commandQueue.push({
     fn,
     priority,
     executeAt: Date.now() + delay
-  };
+  });
 
-  commandQueue.push(job);
   commandQueue.sort((a, b) => b.priority - a.priority);
-
   processQueue();
 }
 
@@ -135,7 +146,7 @@ function processQueue() {
 }
 
 // -----------------------------
-// Rate Limiter
+// Rate Limiter (Token Bucket)
 // -----------------------------
 const RATE_LIMIT = 20;
 let tokens = RATE_LIMIT;
@@ -170,12 +181,12 @@ function genId(prefix) {
 }
 
 // -----------------------------
-// WebSocket
+// WebSocket (UI)
 // -----------------------------
 const wss = new WebSocket.Server({ port: 5001 });
 
-function broadcastToUI(data) {
-  const msg = JSON.stringify(data);
+function sendToUI(obj) {
+  const msg = JSON.stringify(obj);
 
   wss.clients.forEach(ws => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -184,48 +195,6 @@ function broadcastToUI(data) {
   });
 }
 
-// -----------------------------
-// Event → UI Bridge
-// -----------------------------
-eventBus.on("command.sent", (req) => {
-  broadcastToUI({
-    type: "cmd_sent",
-    requestId: req.requestId,
-    deviceId: req.deviceId,
-    commandId: req.commandId
-  });
-});
-
-eventBus.on("command.completed", (req) => {
-  broadcastToUI({
-    type: "cmd_completed",
-    requestId: req.requestId,
-    deviceId: req.deviceId,
-    commandId: req.commandId,
-    execMs: req.execMs
-  });
-});
-
-eventBus.on("command.failed", (req) => {
-  broadcastToUI({
-    type: "cmd_failed",
-    requestId: req.requestId,
-    deviceId: req.deviceId,
-    commandId: req.commandId
-  });
-});
-
-eventBus.on("broadcast.done", (bc) => {
-  broadcastToUI({
-    type: "broadcast_done",
-    broadcastId: bc.broadcastId,
-    status: bc.status
-  });
-});
-
-// -----------------------------
-// WS INPUT
-// -----------------------------
 wss.on("connection", (ws) => {
   ws.on("message", (msg) => {
     try {
@@ -254,6 +223,11 @@ udp.on("message", (msg, rinfo) => {
   try {
     const packet = JSON.parse(msg.toString());
 
+    if (!verifyPacket(packet)) {
+      console.log("❌ Invalid signature → dropped");
+      return;
+    }
+
     if (packet.type === "heartbeat") {
       registry.update(packet.deviceId, {
         deviceId: packet.deviceId,
@@ -265,13 +239,6 @@ udp.on("message", (msg, rinfo) => {
     }
 
     if (packet.type === "ack") {
-      const expected = signPacket(packet);
-
-      if (packet.sig !== expected) {
-        console.log("❌ invalid ACK signature");
-        return;
-      }
-
       handleAck(packet);
     }
 
@@ -325,7 +292,7 @@ function broadcastCommand(commandId, meta = {}) {
 
   console.log("📡 BROADCAST START:", broadcastId);
 
-  devices.forEach((d) => {
+  devices.forEach(d => {
     broadcastRequests[broadcastId].devices[d.deviceId] = "PENDING";
     dispatchCommand(d.deviceId, commandId, meta, broadcastId);
   });
@@ -334,7 +301,7 @@ function broadcastCommand(commandId, meta = {}) {
 }
 
 // -----------------------------
-// Send Packet
+// Send Packet (SIGNED)
 // -----------------------------
 function sendPacket(device, request) {
   const trySend = () => {
@@ -349,7 +316,7 @@ function sendPacket(device, request) {
       commandId: request.commandId,
       meta: request.meta,
       ts: Date.now(),
-      nonce: crypto.randomBytes(8).toString("hex")
+      nonce: genNonce()
     };
 
     packet.sig = signPacket(packet);
@@ -374,7 +341,6 @@ function handleAck(packet) {
   if (!request) return;
 
   request.state = "COMPLETED";
-  request.execMs = packet.execMs;
 
   console.log("✅ ACK:", packet.requestId);
 
@@ -385,7 +351,18 @@ function handleAck(packet) {
     updateBroadcast(request.broadcastId, request.deviceId, "OK");
   }
 
-  eventBus.emit("command.completed", request);
+  eventBus.emit("command.completed", {
+    ...request,
+    execMs: packet.execMs
+  });
+
+  sendToUI({
+    type: "cmd_completed",
+    deviceId: request.deviceId,
+    commandId: request.commandId,
+    execMs: packet.execMs
+  });
+
   saveState();
 }
 
@@ -408,15 +385,18 @@ function handleTimeout(requestId) {
   if (request.retries >= request.maxRetries) {
     console.log("❌ FAILED:", requestId);
 
-    request.state = "FAILED";
     delete pendingRequests[requestId];
 
     if (request.broadcastId) {
       updateBroadcast(request.broadcastId, request.deviceId, "FAILED");
     }
 
-    eventBus.emit("command.failed", request);
-    saveState();
+    sendToUI({
+      type: "cmd_failed",
+      deviceId: request.deviceId,
+      commandId: request.commandId
+    });
+
     return;
   }
 
@@ -429,8 +409,6 @@ function handleTimeout(requestId) {
 
   sendPacket(device, request);
   scheduleTimeout(requestId);
-
-  saveState();
 }
 
 // -----------------------------
@@ -453,7 +431,11 @@ function updateBroadcast(broadcastId, deviceId, status) {
   if (bc.status !== "PENDING") {
     console.log("📊 BROADCAST DONE:", broadcastId, "|", bc.status);
 
-    eventBus.emit("broadcast.done", bc); // 🔥 مهم
+    sendToUI({
+      type: "broadcast_done",
+      broadcastId,
+      status: bc.status
+    });
   }
 
   saveState();
@@ -479,11 +461,7 @@ setInterval(() => {
     broadcasts: broadcastRequests
   };
 
-  wss.clients.forEach(ws => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(snapshot));
-    }
-  });
+  sendToUI(snapshot);
 }, 2000);
 
 // -----------------------------
@@ -492,4 +470,4 @@ setInterval(() => {
 loadState();
 restoreTimers();
 
-console.log("🚀 Gateway Phase 6 running");
+console.log("🚀 Gateway Phase 6 Raafat omer FINAL running");

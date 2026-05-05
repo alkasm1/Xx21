@@ -309,6 +309,39 @@ function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
 }
 
 // -----------------------------
+// BROADCAST UPDATE (NEW)
+// -----------------------------
+function updateBroadcast(broadcastId, deviceId, status) {
+  const bc = broadcastRequests[broadcastId];
+  if (!bc) return;
+
+  bc.devices[deviceId] = status;
+
+  const states = Object.values(bc.devices);
+
+  if (states.every(s => s === "OK")) {
+    bc.status = "COMPLETED";
+  } else if (states.every(s => s !== "PENDING")) {
+    bc.status = "PARTIAL";
+  }
+
+  if (bc.status !== "PENDING") {
+    console.log("📊 BROADCAST DONE:", broadcastId, "|", bc.status);
+
+    sendToUI({
+      type: "broadcast_done",
+      broadcastId,
+      status: bc.status,
+      devices: bc.devices
+    });
+
+    eventBus.emit("broadcast.done", bc);
+  }
+
+  saveState();
+}
+
+// -----------------------------
 // ACK
 // -----------------------------
 function handleAck(packet) {
@@ -324,12 +357,9 @@ function handleAck(packet) {
 
   console.log("✅ ACK:", packet.requestId);
 
-  eventBus.emit("device.ack", {
-    commandId: request.commandId,
-    execMs: request.execMs
-  });
-
-  eventBus.emit("command.completed", request);
+  if (request.broadcastId) {
+    updateBroadcast(request.broadcastId, request.deviceId, "OK");
+  }
 
   sendToUI({
     type: "cmd_completed",
@@ -358,7 +388,9 @@ function handleTimeout(id) {
   if (r.retries >= r.maxRetries) {
     delete pendingRequests[id];
 
-    eventBus.emit("command.failed", r);
+    if (r.broadcastId) {
+      updateBroadcast(r.broadcastId, r.deviceId, "FAILED");
+    }
 
     sendToUI({
       type: "cmd_failed",
@@ -383,9 +415,19 @@ function broadcastCommand(commandId, meta = {}) {
 
   console.log("📡 BROADCAST START:", id);
 
+  broadcastRequests[id] = {
+    broadcastId: id,
+    commandId,
+    devices: {},
+    status: "PENDING"
+  };
+
   devices.forEach(d => {
+    broadcastRequests[id].devices[d.deviceId] = "PENDING";
     dispatchCommand(d.deviceId, commandId, meta, id);
   });
+
+  saveState();
 }
 
 // -----------------------------

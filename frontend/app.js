@@ -1,6 +1,6 @@
 // frontend/app.js
 
-const ws = new WebSocket("ws://localhost:5001");
+const ws = new WebSocket("ws://192.168.1.5:5001");
 
 // -----------------------------
 // UI Elements

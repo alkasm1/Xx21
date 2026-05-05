@@ -1,3 +1,5 @@
+// backend/gateway/gateway.js
+
 const dgram = require("dgram");
 const fs = require("fs");
 const crypto = require("crypto");
@@ -13,24 +15,18 @@ const metrics = new Metrics(eventBus, registry);
 // -----------------------------
 // SECURITY
 // -----------------------------
-const SECRET = "alm_shared_secret";
+const SECRET = "alm_secret_key";
 
-// stable stringify (🔥 مهم جدًا)
 function stableStringify(obj) {
-  return JSON.stringify(
-    Object.keys(obj)
-      .sort()
-      .reduce((acc, key) => {
-        acc[key] = obj[key];
-        return acc;
-      }, {})
-  );
+  const keys = Object.keys(obj).sort();
+  const sorted = {};
+  keys.forEach(k => sorted[k] = obj[k]);
+  return JSON.stringify(sorted);
 }
 
 function signPacket(packet) {
   const clone = { ...packet };
   delete clone.sig;
-
   return crypto
     .createHmac("sha256", SECRET)
     .update(stableStringify(clone))
@@ -50,7 +46,6 @@ function serializeRequests(obj) {
 
   for (const id in obj) {
     const r = obj[id];
-
     clean[id] = {
       requestId: r.requestId,
       deviceId: r.deviceId,
@@ -88,14 +83,90 @@ function loadState() {
 }
 
 // -----------------------------
+// Queue + Scheduling
+// -----------------------------
+let commandQueue = [];
+let isProcessingQueue = false;
+
+function enqueueCommand(fn, priority = 0, delay = 0) {
+  const job = {
+    fn,
+    priority,
+    executeAt: Date.now() + delay
+  };
+
+  commandQueue.push(job);
+  commandQueue.sort((a, b) => b.priority - a.priority);
+
+  processQueue();
+}
+
+function processQueue() {
+  if (isProcessingQueue) return;
+
+  isProcessingQueue = true;
+
+  const loop = () => {
+    if (commandQueue.length === 0) {
+      isProcessingQueue = false;
+      return;
+    }
+
+    const now = Date.now();
+    const job = commandQueue[0];
+
+    if (job.executeAt > now) {
+      setTimeout(loop, job.executeAt - now);
+      return;
+    }
+
+    commandQueue.shift();
+
+    try {
+      job.fn();
+    } catch (e) {
+      console.error("Queue job error:", e);
+    }
+
+    setImmediate(loop);
+  };
+
+  loop();
+}
+
+// -----------------------------
+// Rate Limiter
+// -----------------------------
+const RATE_LIMIT = 20;
+let tokens = RATE_LIMIT;
+let lastRefill = Date.now();
+
+function refillTokens() {
+  const now = Date.now();
+  const delta = (now - lastRefill) / 1000;
+
+  tokens += delta * RATE_LIMIT;
+  if (tokens > RATE_LIMIT) tokens = RATE_LIMIT;
+
+  lastRefill = now;
+}
+
+function canSend() {
+  refillTokens();
+
+  if (tokens >= 1) {
+    tokens -= 1;
+    return true;
+  }
+
+  return false;
+}
+
+// -----------------------------
 // Helpers
 // -----------------------------
 function genId(prefix) {
   return prefix + "_" + Math.random().toString(36).slice(2);
-}
-
-function genNonce() {
-  return crypto.randomBytes(8).toString("hex");
 }
 
 // -----------------------------
@@ -103,17 +174,73 @@ function genNonce() {
 // -----------------------------
 const wss = new WebSocket.Server({ port: 5001 });
 
+function broadcastToUI(data) {
+  const msg = JSON.stringify(data);
+
+  wss.clients.forEach(ws => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(msg);
+    }
+  });
+}
+
+// -----------------------------
+// Event → UI Bridge
+// -----------------------------
+eventBus.on("command.sent", (req) => {
+  broadcastToUI({
+    type: "cmd_sent",
+    requestId: req.requestId,
+    deviceId: req.deviceId,
+    commandId: req.commandId
+  });
+});
+
+eventBus.on("command.completed", (req) => {
+  broadcastToUI({
+    type: "cmd_completed",
+    requestId: req.requestId,
+    deviceId: req.deviceId,
+    commandId: req.commandId,
+    execMs: req.execMs
+  });
+});
+
+eventBus.on("command.failed", (req) => {
+  broadcastToUI({
+    type: "cmd_failed",
+    requestId: req.requestId,
+    deviceId: req.deviceId,
+    commandId: req.commandId
+  });
+});
+
+eventBus.on("broadcast.done", (bc) => {
+  broadcastToUI({
+    type: "broadcast_done",
+    broadcastId: bc.broadcastId,
+    status: bc.status
+  });
+});
+
+// -----------------------------
+// WS INPUT
+// -----------------------------
 wss.on("connection", (ws) => {
   ws.on("message", (msg) => {
     try {
       const data = JSON.parse(msg.toString());
 
       if (data.type === "ui.command") {
-        dispatchCommand(data.deviceId, data.commandId, data.params || {});
+        enqueueCommand(() => {
+          dispatchCommand(data.deviceId, data.commandId, data.params || {});
+        });
       }
 
       if (data.type === "ui.broadcast") {
-        broadcastCommand(data.commandId, data.params || {});
+        enqueueCommand(() => {
+          broadcastCommand(data.commandId, data.params || {});
+        });
       }
 
     } catch {}
@@ -127,9 +254,6 @@ udp.on("message", (msg, rinfo) => {
   try {
     const packet = JSON.parse(msg.toString());
 
-    // -----------------------------
-    // Heartbeat
-    // -----------------------------
     if (packet.type === "heartbeat") {
       registry.update(packet.deviceId, {
         deviceId: packet.deviceId,
@@ -138,31 +262,23 @@ udp.on("message", (msg, rinfo) => {
         lastSeen: Date.now(),
         status: "online"
       });
-
-      return;
     }
 
-    // -----------------------------
-    // ACK
-    // -----------------------------
     if (packet.type === "ack") {
+      const expected = signPacket(packet);
+
+      if (packet.sig !== expected) {
+        console.log("❌ invalid ACK signature");
+        return;
+      }
+
       handleAck(packet);
-      return;
     }
 
-    // -----------------------------
-    // Unknown packet (debug)
-    // -----------------------------
-    console.log("⚠️ Unknown packet type:", packet.type);
-
-  } catch (e) {
-    console.log("❌ UDP parse error:", e.message);
-  }
+  } catch {}
 });
 
-udp.bind(5000, () => {
-  console.log("📡 UDP listening on 5000");
-});
+udp.bind(5000);
 
 // -----------------------------
 // Dispatch
@@ -218,27 +334,36 @@ function broadcastCommand(commandId, meta = {}) {
 }
 
 // -----------------------------
-// Send Packet (🔥 SECURITY هنا)
+// Send Packet
 // -----------------------------
 function sendPacket(device, request) {
-  const packet = {
-    requestId: request.requestId,
-    deviceId: request.deviceId,
-    commandId: request.commandId,
-    meta: request.meta,
-    ts: Date.now(),
-    nonce: genNonce()
+  const trySend = () => {
+    if (!canSend()) {
+      setTimeout(trySend, 50);
+      return;
+    }
+
+    const packet = {
+      requestId: request.requestId,
+      deviceId: request.deviceId,
+      commandId: request.commandId,
+      meta: request.meta,
+      ts: Date.now(),
+      nonce: crypto.randomBytes(8).toString("hex")
+    };
+
+    packet.sig = signPacket(packet);
+
+    udp.send(
+      Buffer.from(JSON.stringify(packet)),
+      device.port,
+      device.ip
+    );
+
+    console.log("🚀 SEND:", request.requestId, "| retry:", request.retries);
   };
 
-  packet.sig = signPacket(packet);
-
-  udp.send(
-    Buffer.from(JSON.stringify(packet)),
-    device.port,
-    device.ip
-  );
-
-  console.log("🚀 SEND:", request.requestId, "| retry:", request.retries);
+  trySend();
 }
 
 // -----------------------------
@@ -249,6 +374,7 @@ function handleAck(packet) {
   if (!request) return;
 
   request.state = "COMPLETED";
+  request.execMs = packet.execMs;
 
   console.log("✅ ACK:", packet.requestId);
 
@@ -326,6 +452,8 @@ function updateBroadcast(broadcastId, deviceId, status) {
 
   if (bc.status !== "PENDING") {
     console.log("📊 BROADCAST DONE:", broadcastId, "|", bc.status);
+
+    eventBus.emit("broadcast.done", bc); // 🔥 مهم
   }
 
   saveState();
@@ -358,6 +486,8 @@ setInterval(() => {
   });
 }, 2000);
 
+// -----------------------------
+// Init
 // -----------------------------
 loadState();
 restoreTimers();

@@ -1,5 +1,3 @@
-// backend/gateway/gateway.js
-
 const dgram = require("dgram");
 const fs = require("fs");
 const crypto = require("crypto");
@@ -13,19 +11,29 @@ const Metrics = require("./metrics");
 const metrics = new Metrics(eventBus, registry);
 
 // -----------------------------
-// CONFIG (Security)
+// CONFIG
 // -----------------------------
-const SECRET = "alm_secret_key";
+const SECRET = "alm_shared_secret";
+const STATE_FILE = "./state.json";
 
 // -----------------------------
-// Helpers (Security)
+// Security (CRITICAL)
 // -----------------------------
 function stableStringify(obj) {
-  return JSON.stringify(Object.keys(obj).sort().reduce((o, k) => {
-    if (k === "sig") return o;
-    o[k] = obj[k];
-    return o;
-  }, {}));
+  if (obj === null || typeof obj !== "object") return JSON.stringify(obj);
+
+  if (Array.isArray(obj)) {
+    return "[" + obj.map(stableStringify).join(",") + "]";
+  }
+
+  return (
+    "{" +
+    Object.keys(obj)
+      .sort()
+      .map(k => JSON.stringify(k) + ":" + stableStringify(obj[k]))
+      .join(",") +
+    "}"
+  );
 }
 
 function signPacket(packet) {
@@ -35,10 +43,12 @@ function signPacket(packet) {
     .digest("hex");
 }
 
-function verifyPacket(packet) {
+function verifySignature(packet) {
   const sig = packet.sig;
-  const expected = signPacket(packet);
-  return sig === expected;
+  const base = { ...packet };
+  delete base.sig;
+
+  return signPacket(base) === sig;
 }
 
 function genNonce() {
@@ -46,19 +56,16 @@ function genNonce() {
 }
 
 // -----------------------------
-// State Persistence
+// STATE
 // -----------------------------
-const STATE_FILE = "./state.json";
-
 let pendingRequests = {};
 let broadcastRequests = {};
 
+// -----------------------------
 function serializeRequests(obj) {
   const clean = {};
-
   for (const id in obj) {
     const r = obj[id];
-
     clean[id] = {
       requestId: r.requestId,
       deviceId: r.deviceId,
@@ -70,25 +77,23 @@ function serializeRequests(obj) {
       broadcastId: r.broadcastId
     };
   }
-
   return clean;
 }
 
 function saveState() {
-  const state = {
-    pendingRequests: serializeRequests(pendingRequests),
-    broadcastRequests
-  };
-
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  fs.writeFileSync(
+    STATE_FILE,
+    JSON.stringify({
+      pendingRequests: serializeRequests(pendingRequests),
+      broadcastRequests
+    }, null, 2)
+  );
 }
 
 function loadState() {
   if (!fs.existsSync(STATE_FILE)) return;
 
-  const raw = fs.readFileSync(STATE_FILE);
-  const state = JSON.parse(raw);
-
+  const state = JSON.parse(fs.readFileSync(STATE_FILE));
   pendingRequests = state.pendingRequests || {};
   broadcastRequests = state.broadcastRequests || {};
 
@@ -96,12 +101,12 @@ function loadState() {
 }
 
 // -----------------------------
-// Queue + Scheduling
+// QUEUE + SCHEDULER
 // -----------------------------
 let commandQueue = [];
-let isProcessingQueue = false;
+let isProcessing = false;
 
-function enqueueCommand(fn, priority = 0, delay = 0) {
+function enqueue(fn, priority = 0, delay = 0) {
   commandQueue.push({
     fn,
     priority,
@@ -113,18 +118,17 @@ function enqueueCommand(fn, priority = 0, delay = 0) {
 }
 
 function processQueue() {
-  if (isProcessingQueue) return;
-
-  isProcessingQueue = true;
+  if (isProcessing) return;
+  isProcessing = true;
 
   const loop = () => {
     if (commandQueue.length === 0) {
-      isProcessingQueue = false;
+      isProcessing = false;
       return;
     }
 
-    const now = Date.now();
     const job = commandQueue[0];
+    const now = Date.now();
 
     if (job.executeAt > now) {
       setTimeout(loop, job.executeAt - now);
@@ -136,7 +140,7 @@ function processQueue() {
     try {
       job.fn();
     } catch (e) {
-      console.error("Queue job error:", e);
+      console.error("Queue error:", e);
     }
 
     setImmediate(loop);
@@ -146,13 +150,13 @@ function processQueue() {
 }
 
 // -----------------------------
-// Rate Limiter (Token Bucket)
+// RATE LIMIT
 // -----------------------------
 const RATE_LIMIT = 20;
 let tokens = RATE_LIMIT;
 let lastRefill = Date.now();
 
-function refillTokens() {
+function refill() {
   const now = Date.now();
   const delta = (now - lastRefill) / 1000;
 
@@ -163,21 +167,19 @@ function refillTokens() {
 }
 
 function canSend() {
-  refillTokens();
-
+  refill();
   if (tokens >= 1) {
-    tokens -= 1;
+    tokens--;
     return true;
   }
-
   return false;
 }
 
 // -----------------------------
-// Helpers
+// HELPERS
 // -----------------------------
-function genId(prefix) {
-  return prefix + "_" + Math.random().toString(36).slice(2);
+function genId() {
+  return "req_" + Math.random().toString(36).slice(2);
 }
 
 // -----------------------------
@@ -186,122 +188,67 @@ function genId(prefix) {
 const wss = new WebSocket.Server({ port: 5001 });
 
 function sendToUI(obj) {
-  const msg = JSON.stringify(obj);
-
   wss.clients.forEach(ws => {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(msg);
+      ws.send(JSON.stringify(obj));
     }
   });
 }
 
-wss.on("connection", (ws) => {
-  ws.on("message", (msg) => {
-    try {
-      const data = JSON.parse(msg.toString());
+wss.on("connection", ws => {
+  ws.on("message", msg => {
+    const data = JSON.parse(msg.toString());
 
-      if (data.type === "ui.command") {
-        enqueueCommand(() => {
-          dispatchCommand(data.deviceId, data.commandId, data.params || {});
-        });
-      }
+    if (data.type === "ui.command") {
+      enqueue(() => {
+        dispatchCommand(data.deviceId, data.commandId, data.params);
+      }, data.priority || 0, data.delay || 0);
+    }
 
-      if (data.type === "ui.broadcast") {
-        enqueueCommand(() => {
-          broadcastCommand(data.commandId, data.params || {});
-        });
-      }
-
-    } catch {}
+    if (data.type === "ui.broadcast") {
+      enqueue(() => {
+        broadcastCommand(data.commandId, data.params);
+      });
+    }
   });
 });
 
 // -----------------------------
-// UDP Listener
+// UDP LISTENER
 // -----------------------------
 udp.on("message", (msg, rinfo) => {
+  let packet;
+
   try {
-    const packet = JSON.parse(msg.toString());
+    packet = JSON.parse(msg.toString());
+  } catch {
+    return;
+  }
 
-    if (!verifyPacket(packet)) {
-      console.log("❌ Invalid signature → dropped");
-      return;
-    }
+  if (!verifySignature(packet)) {
+    console.log("❌ Invalid signature → dropped");
+    return;
+  }
 
-    if (packet.type === "heartbeat") {
-      registry.update(packet.deviceId, {
-        deviceId: packet.deviceId,
-        ip: rinfo.address,
-        port: rinfo.port,
-        lastSeen: Date.now(),
-        status: "online"
-      });
-    }
+  if (packet.type === "heartbeat") {
+    registry.update(packet.deviceId, {
+      deviceId: packet.deviceId,
+      ip: rinfo.address,
+      port: rinfo.port,
+      lastSeen: Date.now(),
+      status: "online"
+    });
+  }
 
-    if (packet.type === "ack") {
-      handleAck(packet);
-    }
-
-  } catch {}
+  if (packet.type === "ack") {
+    handleAck(packet);
+  }
 });
 
 udp.bind(5000);
 
 // -----------------------------
-// Dispatch
-// -----------------------------
-function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
-  const device = registry.get(deviceId);
-  if (!device) return;
-
-  const requestId = genId("req");
-
-  const request = {
-    requestId,
-    deviceId,
-    commandId,
-    meta,
-    retries: 0,
-    maxRetries: 3,
-    state: "PENDING",
-    broadcastId
-  };
-
-  pendingRequests[requestId] = request;
-
-  sendPacket(device, request);
-  scheduleTimeout(requestId);
-
-  eventBus.emit("command.sent", request);
-  saveState();
-}
-
-// -----------------------------
-// Broadcast
-// -----------------------------
-function broadcastCommand(commandId, meta = {}) {
-  const devices = registry.getAll();
-  const broadcastId = genId("bc");
-
-  broadcastRequests[broadcastId] = {
-    broadcastId,
-    commandId,
-    devices: {},
-    status: "PENDING"
-  };
-
-  console.log("📡 BROADCAST START:", broadcastId);
-
-  devices.forEach(d => {
-    broadcastRequests[broadcastId].devices[d.deviceId] = "PENDING";
-    dispatchCommand(d.deviceId, commandId, meta, broadcastId);
-  });
-
-  saveState();
-}
-
-// -----------------------------
-// Send Packet (SIGNED)
+// SEND PACKET (SIGNED)
 // -----------------------------
 function sendPacket(device, request) {
   const trySend = () => {
@@ -319,7 +266,8 @@ function sendPacket(device, request) {
       nonce: genNonce()
     };
 
-    packet.sig = signPacket(packet);
+    const base = { ...packet };
+    packet.sig = signPacket(base);
 
     udp.send(
       Buffer.from(JSON.stringify(packet)),
@@ -334,140 +282,124 @@ function sendPacket(device, request) {
 }
 
 // -----------------------------
+// DISPATCH
+// -----------------------------
+function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
+  const device = registry.get(deviceId);
+  if (!device) return;
+
+  const request = {
+    requestId: genId(),
+    deviceId,
+    commandId,
+    meta,
+    retries: 0,
+    maxRetries: 3,
+    state: "PENDING",
+    broadcastId
+  };
+
+  pendingRequests[request.requestId] = request;
+
+  sendPacket(device, request);
+  scheduleTimeout(request.requestId);
+
+  eventBus.emit("command.sent", request);
+  saveState();
+}
+
+// -----------------------------
 // ACK
 // -----------------------------
 function handleAck(packet) {
   const request = pendingRequests[packet.requestId];
   if (!request) return;
 
+  clearTimeout(request._timeoutRef);
+
   request.state = "COMPLETED";
+  request.execMs = packet.execMs || 0;
+
+  delete pendingRequests[packet.requestId];
 
   console.log("✅ ACK:", packet.requestId);
 
-  clearTimeout(request._timeoutRef);
-  delete pendingRequests[packet.requestId];
-
-  if (request.broadcastId) {
-    updateBroadcast(request.broadcastId, request.deviceId, "OK");
-  }
-
-  eventBus.emit("command.completed", {
-    ...request,
-    execMs: packet.execMs
+  eventBus.emit("device.ack", {
+    commandId: request.commandId,
+    execMs: request.execMs
   });
+
+  eventBus.emit("command.completed", request);
 
   sendToUI({
     type: "cmd_completed",
     deviceId: request.deviceId,
     commandId: request.commandId,
-    execMs: packet.execMs
+    execMs: request.execMs
   });
 
   saveState();
 }
 
 // -----------------------------
-// Timeout + Retry
+// TIMEOUT
 // -----------------------------
-function scheduleTimeout(requestId) {
-  const request = pendingRequests[requestId];
-  if (!request) return;
+function scheduleTimeout(id) {
+  const r = pendingRequests[id];
+  if (!r) return;
 
-  request._timeoutRef = setTimeout(() => {
-    handleTimeout(requestId);
-  }, 2000);
+  r._timeoutRef = setTimeout(() => handleTimeout(id), 2000);
 }
 
-function handleTimeout(requestId) {
-  const request = pendingRequests[requestId];
-  if (!request) return;
+function handleTimeout(id) {
+  const r = pendingRequests[id];
+  if (!r) return;
 
-  if (request.retries >= request.maxRetries) {
-    console.log("❌ FAILED:", requestId);
+  if (r.retries >= r.maxRetries) {
+    delete pendingRequests[id];
 
-    delete pendingRequests[requestId];
-
-    if (request.broadcastId) {
-      updateBroadcast(request.broadcastId, request.deviceId, "FAILED");
-    }
+    eventBus.emit("command.failed", r);
 
     sendToUI({
       type: "cmd_failed",
-      deviceId: request.deviceId,
-      commandId: request.commandId
+      deviceId: r.deviceId,
+      commandId: r.commandId
     });
 
     return;
   }
 
-  request.retries++;
-
-  const device = registry.get(request.deviceId);
-  if (!device) return;
-
-  console.log("🔁 RETRY:", requestId, "|", request.retries);
-
-  sendPacket(device, request);
-  scheduleTimeout(requestId);
+  r.retries++;
+  sendPacket(registry.get(r.deviceId), r);
+  scheduleTimeout(id);
 }
 
 // -----------------------------
-// Broadcast Update
+// BROADCAST
 // -----------------------------
-function updateBroadcast(broadcastId, deviceId, status) {
-  const bc = broadcastRequests[broadcastId];
-  if (!bc) return;
+function broadcastCommand(commandId, meta = {}) {
+  const devices = registry.getAll();
+  const id = "bc_" + Math.random().toString(36).slice(2);
 
-  bc.devices[deviceId] = status;
+  console.log("📡 BROADCAST START:", id);
 
-  const states = Object.values(bc.devices);
-
-  if (states.every(s => s === "OK")) {
-    bc.status = "COMPLETED";
-  } else if (states.every(s => s !== "PENDING")) {
-    bc.status = "PARTIAL";
-  }
-
-  if (bc.status !== "PENDING") {
-    console.log("📊 BROADCAST DONE:", broadcastId, "|", bc.status);
-
-    sendToUI({
-      type: "broadcast_done",
-      broadcastId,
-      status: bc.status
-    });
-  }
-
-  saveState();
-}
-
-// -----------------------------
-// Restore
-// -----------------------------
-function restoreTimers() {
-  Object.values(pendingRequests).forEach(req => {
-    scheduleTimeout(req.requestId);
+  devices.forEach(d => {
+    dispatchCommand(d.deviceId, commandId, meta, id);
   });
 }
 
 // -----------------------------
-// Snapshot
+// SNAPSHOT
 // -----------------------------
 setInterval(() => {
-  const snapshot = {
+  sendToUI({
     type: "snapshot",
     devices: registry.getAll(),
     metrics: metrics.snapshot(),
     broadcasts: broadcastRequests
-  };
-
-  sendToUI(snapshot);
+  });
 }, 2000);
 
 // -----------------------------
-// Init
-// -----------------------------
 loadState();
-restoreTimers();
-
-console.log("🚀 Gateway Phase 6 Raafat omer FINAL running");
+console.log("🚀 Gateway Phase 6 FINAL running");

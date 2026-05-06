@@ -18,6 +18,52 @@ const SECRET = "alm_shared_secret";
 const STATE_FILE = "./state.json";
 
 // -----------------------------
+// WebSocket + sendToUI (يجب أن يكون هنا)
+// -----------------------------
+const wss = new WebSocket.Server({ port: 5001 });
+
+function sendToUI(obj) {
+  wss.clients.forEach(ws => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(obj));
+    }
+  });
+}
+
+wss.on("connection", ws => {
+  ws.on("message", msg => {
+    const data = JSON.parse(msg.toString());
+
+    if (data.type === "ui.command") {
+      dispatchCommand(data.deviceId, data.commandId, data.params);
+    }
+
+    if (data.type === "ui.broadcast") {
+      broadcastCommand(data.commandId, data.params);
+    }
+  });
+});
+
+const dgram = require("dgram");
+const fs = require("fs");
+const crypto = require("crypto");
+const udp = dgram.createSocket("udp4");
+const WebSocket = require("ws");
+const { Client } = require("ssh2");
+
+const eventBus = require("./event_bus");
+const registry = require("./device_registry");
+const Metrics = require("./metrics");
+
+const metrics = new Metrics(eventBus, registry);
+
+// -----------------------------
+// CONFIG
+// -----------------------------
+const SECRET = "alm_shared_secret";
+const STATE_FILE = "./state.json";
+
+// -----------------------------
 // Security
 // -----------------------------
 function stableStringify(obj) {
@@ -138,9 +184,6 @@ function execSSH(device, command) {
 // -----------------------------
 // DISPATCH (FIXED)
 // -----------------------------
-function genId() {
-  return "req_" + Math.random().toString(36).slice(2);
-}
 
 function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
   const device = registry.get(deviceId);
@@ -152,32 +195,71 @@ function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
     commandId,
     meta,
     retries: 0,
-    maxRetries: 0, // SSH لا يحتاج retries
+    maxRetries: 0,
     state: "PENDING",
     broadcastId
   };
 
   pendingRequests[request.requestId] = request;
 
-  // 🔥 SSH PATH
   if (device.method === "ssh") {
     handleSSH(request, device);
     return;
   }
 
-  // UDP fallback
   sendPacket(device, request);
   scheduleTimeout(request.requestId);
 }
 
-// -----------------------------
-// SSH HANDLER (FIXED)
-// -----------------------------
+
+  // UDP fallback
+  sendPacket(device, request);
+  scheduleTimeout(request.requestId);
+}
+function execSSH(device, command) {
+  return new Promise((resolve, reject) => {
+    const conn = new Client();
+    const start = Date.now();
+
+    let timeoutRef = setTimeout(() => {
+      conn.end();
+      reject(new Error("SSH timeout"));
+    }, 6000);
+
+    conn.on("ready", () => {
+      conn.exec(command, (err, stream) => {
+        if (err) {
+          clearTimeout(timeoutRef);
+          return reject(err);
+        }
+
+        stream.on("close", () => {
+          clearTimeout(timeoutRef);
+          conn.end();
+          resolve({ execMs: Date.now() - start });
+        });
+      });
+    });
+
+    conn.on("error", err => {
+      clearTimeout(timeoutRef);
+      reject(err);
+    });
+
+    conn.connect({
+      host: device.ip,
+      port: device.port || 22,
+      username: device.username,
+      password: device.password
+    });
+  });
+}
+
 async function handleSSH(request, device) {
   let cmd = "reboot";
 
   if (request.commandId === 17) {
-    cmd = "uname -a"; // لاحقًا نضع MikroTik profile
+    cmd = "uname -a";
   }
 
   try {
@@ -216,6 +298,7 @@ async function handleSSH(request, device) {
     });
   }
 }
+
 // -----------------------------
 // UDP LISTENER
 // -----------------------------

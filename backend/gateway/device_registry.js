@@ -69,3 +69,14 @@ module.exports = {
   get,
   getStats
 };
+registry.update("router-1", {
+  deviceId: "router-1",
+  ip: "192.168.1.10",
+  type: "mikrotik",
+  method: "ssh",
+  username: "admin",
+  password: "1234",
+  port: 22,
+  status: "online",
+  lastSeen: Date.now()
+});

@@ -3,6 +3,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const udp = dgram.createSocket("udp4");
 const WebSocket = require("ws");
+const { Client } = require("ssh2"); // 🔥 NEW
 
 const eventBus = require("./event_bus");
 const registry = require("./device_registry");
@@ -17,7 +18,7 @@ const SECRET = "alm_shared_secret";
 const STATE_FILE = "./state.json";
 
 // -----------------------------
-// Security (CRITICAL)
+// Security
 // -----------------------------
 function stableStringify(obj) {
   if (obj === null || typeof obj !== "object") return JSON.stringify(obj);
@@ -47,7 +48,6 @@ function verifySignature(packet) {
   const sig = packet.sig;
   const base = { ...packet };
   delete base.sig;
-
   return signPacket(base) === sig;
 }
 
@@ -101,7 +101,7 @@ function loadState() {
 }
 
 // -----------------------------
-// QUEUE + SCHEDULER
+// QUEUE
 // -----------------------------
 let commandQueue = [];
 let isProcessing = false;
@@ -176,14 +176,12 @@ function canSend() {
 }
 
 // -----------------------------
-// HELPERS
-// -----------------------------
 function genId() {
   return "req_" + Math.random().toString(36).slice(2);
 }
 
 // -----------------------------
-// WebSocket (UI)
+// WebSocket
 // -----------------------------
 const wss = new WebSocket.Server({ port: 5001 });
 
@@ -202,7 +200,7 @@ wss.on("connection", ws => {
     if (data.type === "ui.command") {
       enqueue(() => {
         dispatchCommand(data.deviceId, data.commandId, data.params);
-      }, data.priority || 0, data.delay || 0);
+      });
     }
 
     if (data.type === "ui.broadcast") {
@@ -248,41 +246,37 @@ udp.on("message", (msg, rinfo) => {
 udp.bind(5000);
 
 // -----------------------------
-// SEND PACKET (SIGNED)
+// SSH EXECUTION 🔥
 // -----------------------------
-function sendPacket(device, request) {
-  const trySend = () => {
-    if (!canSend()) {
-      setTimeout(trySend, 50);
-      return;
-    }
+function execSSH(device, command) {
+  return new Promise((resolve, reject) => {
+    const conn = new Client();
+    const start = Date.now();
 
-    const packet = {
-      requestId: request.requestId,
-      deviceId: request.deviceId,
-      commandId: request.commandId,
-      meta: request.meta,
-      ts: Date.now(),
-      nonce: genNonce()
-    };
+    conn.on("ready", () => {
+      conn.exec(command, (err, stream) => {
+        if (err) return reject(err);
 
-    const base = { ...packet };
-    packet.sig = signPacket(base);
+        stream.on("close", () => {
+          conn.end();
+          resolve({ execMs: Date.now() - start });
+        });
+      });
+    });
 
-    udp.send(
-      Buffer.from(JSON.stringify(packet)),
-      device.port,
-      device.ip
-    );
+    conn.on("error", reject);
 
-    console.log("🚀 SEND:", request.requestId, "| retry:", request.retries);
-  };
-
-  trySend();
+    conn.connect({
+      host: device.ip,
+      port: device.port || 22,
+      username: device.username,
+      password: device.password
+    });
+  });
 }
 
 // -----------------------------
-// DISPATCH
+// DISPATCH (UPDATED)
 // -----------------------------
 function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
   const device = registry.get(deviceId);
@@ -301,147 +295,95 @@ function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
 
   pendingRequests[request.requestId] = request;
 
+  // 🔥 SSH PATH
+  if (device.method === "ssh") {
+    handleSSH(request, device);
+    return;
+  }
+
+  // UDP fallback
   sendPacket(device, request);
   scheduleTimeout(request.requestId);
-
-  eventBus.emit("command.sent", request);
-  saveState();
 }
 
 // -----------------------------
-// BROADCAST UPDATE (NEW)
+// SSH HANDLER 🔥
 // -----------------------------
-function updateBroadcast(broadcastId, deviceId, status) {
-  const bc = broadcastRequests[broadcastId];
-  if (!bc) return;
+async function handleSSH(request, device) {
+  let cmd = "reboot";
 
-  bc.devices[deviceId] = status;
-
-  const states = Object.values(bc.devices);
-
-  if (states.every(s => s === "OK")) {
-    bc.status = "COMPLETED";
-  } else if (states.every(s => s !== "PENDING")) {
-    bc.status = "PARTIAL";
+  if (request.commandId === 17) {
+    cmd = "uname -a";
   }
 
-  if (bc.status !== "PENDING") {
-    console.log("📊 BROADCAST DONE:", broadcastId, "|", bc.status);
+  try {
+    const res = await execSSH(device, cmd);
+
+    console.log("✅ SSH OK:", request.deviceId);
+
+    if (request.broadcastId) {
+      updateBroadcast(request.broadcastId, request.deviceId, "OK");
+    }
 
     sendToUI({
-      type: "broadcast_done",
-      broadcastId,
-      status: bc.status,
-      devices: bc.devices
+      type: "cmd_completed",
+      deviceId: request.deviceId,
+      commandId: request.commandId,
+      execMs: res.execMs
     });
 
-    eventBus.emit("broadcast.done", bc);
-  }
+  } catch (err) {
+    console.log("❌ SSH FAIL:", err.message);
 
-  saveState();
-}
-
-// -----------------------------
-// ACK
-// -----------------------------
-function handleAck(packet) {
-  const request = pendingRequests[packet.requestId];
-  if (!request) return;
-
-  clearTimeout(request._timeoutRef);
-
-  request.state = "COMPLETED";
-  request.execMs = packet.execMs || 0;
-
-  delete pendingRequests[packet.requestId];
-
-  console.log("✅ ACK:", packet.requestId);
-
-  if (request.broadcastId) {
-    updateBroadcast(request.broadcastId, request.deviceId, "OK");
-  }
-
-  sendToUI({
-    type: "cmd_completed",
-    deviceId: request.deviceId,
-    commandId: request.commandId,
-    execMs: request.execMs
-  });
-
-  saveState();
-}
-
-// -----------------------------
-// TIMEOUT
-// -----------------------------
-function scheduleTimeout(id) {
-  const r = pendingRequests[id];
-  if (!r) return;
-
-  r._timeoutRef = setTimeout(() => handleTimeout(id), 2000);
-}
-
-function handleTimeout(id) {
-  const r = pendingRequests[id];
-  if (!r) return;
-
-  if (r.retries >= r.maxRetries) {
-    delete pendingRequests[id];
-
-    if (r.broadcastId) {
-      updateBroadcast(r.broadcastId, r.deviceId, "FAILED");
+    if (request.broadcastId) {
+      updateBroadcast(request.broadcastId, request.deviceId, "FAILED");
     }
 
     sendToUI({
       type: "cmd_failed",
-      deviceId: r.deviceId,
-      commandId: r.commandId
+      deviceId: request.deviceId,
+      commandId: request.commandId
     });
-
-    return;
   }
-
-  r.retries++;
-  sendPacket(registry.get(r.deviceId), r);
-  scheduleTimeout(id);
 }
-
-// -----------------------------
-// BROADCAST
-// -----------------------------
-function broadcastCommand(commandId, meta = {}) {
-  const devices = registry.getAll();
-  const id = "bc_" + Math.random().toString(36).slice(2);
-
-  console.log("📡 BROADCAST START:", id);
-
-  broadcastRequests[id] = {
-    broadcastId: id,
-    commandId,
-    devices: {},
-    status: "PENDING"
-  };
-
-  devices.forEach(d => {
-    broadcastRequests[id].devices[d.deviceId] = "PENDING";
-    dispatchCommand(d.deviceId, commandId, meta, id);
-  });
-
-  saveState();
+// ----------------------------- // ACK // ----------------------------- function handleAck(packet) { const request = pendingRequests[packet.requestId]; if (!request) return;
+ 
+clearTimeout(request._timeoutRef);
+ 
+request.state = "COMPLETED"; request.execMs = packet.execMs || 0;
+ 
+delete pendingRequests[packet.requestId];
+ 
+console.log("✅ ACK:", packet.requestId);
+ 
+if (request.broadcastId) { updateBroadcast(request.broadcastId, request.deviceId, "OK"); }
+ 
+sendToUI({ type: "cmd_completed", deviceId: request.deviceId, commandId: request.commandId, execMs: request.execMs });
+ 
+saveState(); }
+ 
+// ----------------------------- // TIMEOUT // ----------------------------- function scheduleTimeout(id) { const r = pendingRequests[id]; if (!r) return;
+ 
+r._timeoutRef = setTimeout(() => handleTimeout(id), 2000); }
+ 
+function handleTimeout(id) { const r = pendingRequests[id]; if (!r) return;
+ 
+if (r.retries >= r.maxRetries) { delete pendingRequests[id];
+ `if (r.broadcastId) {     updateBroadcast(r.broadcastId, r.deviceId, "FAILED");   }    sendToUI({     type: "cmd_failed",     deviceId: r.deviceId,     commandId: r.commandId   });    return;   ` 
 }
-
-// -----------------------------
-// SNAPSHOT
-// -----------------------------
-setInterval(() => {
-  sendToUI({
-    type: "snapshot",
-    devices: registry.getAll(),
-    metrics: metrics.snapshot(),
-    broadcasts: broadcastRequests
-  });
-}, 2000);
-
-// -----------------------------
-loadState();
-console.log("🚀 Gateway Phase 6 FINAL running");
+ 
+r.retries++; sendPacket(registry.get(r.deviceId), r); scheduleTimeout(id); }
+ 
+// ----------------------------- // BROADCAST // ----------------------------- function broadcastCommand(commandId, meta = {}) { const devices = registry.getAll(); const id = "bc_" + Math.random().toString(36).slice(2);
+ 
+console.log("📡 BROADCAST START:", id);
+ 
+broadcastRequests[id] = { broadcastId: id, commandId, devices: {}, status: "PENDING" };
+ 
+devices.forEach(d => { broadcastRequests[id].devices[d.deviceId] = "PENDING"; dispatchCommand(d.deviceId, commandId, meta, id); });
+ 
+saveState(); }
+ 
+// ----------------------------- // SNAPSHOT // ----------------------------- setInterval(() => { sendToUI({ type: "snapshot", devices: registry.getAll(), metrics: metrics.snapshot(), broadcasts: broadcastRequests }); }, 2000);
+ 
+// ----------------------------- loadState(); console.log("🚀 Gateway Phase 6 FINAL running");

@@ -71,7 +71,7 @@ module.exports = {
 };
 registry.update("router-1", {
   deviceId: "router-1",
-  ip: "192.168.1.10",
+  ip: "192.168.88.232",
   type: "mikrotik",
   method: "ssh",
   username: "admin",

@@ -39,7 +39,7 @@ const registry = new DeviceRegistry();
 // ✅ إضافة جهاز SSH تجريبي (اختياري)
 registry.update("router-1", {
   deviceId: "router-1",
-  ip: "192.168.1.10",   // عدل IP حسب جهازك
+  ip: "192.168.88.232",   // 
   port: 22,
   username: "admin",
   password: "1234",

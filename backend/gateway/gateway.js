@@ -346,44 +346,138 @@ async function handleSSH(request, device) {
     });
   }
 }
-// ----------------------------- // ACK // ----------------------------- function handleAck(packet) { const request = pendingRequests[packet.requestId]; if (!request) return;
- 
-clearTimeout(request._timeoutRef);
- 
-request.state = "COMPLETED"; request.execMs = packet.execMs || 0;
- 
-delete pendingRequests[packet.requestId];
- 
-console.log("✅ ACK:", packet.requestId);
- 
-if (request.broadcastId) { updateBroadcast(request.broadcastId, request.deviceId, "OK"); }
- 
-sendToUI({ type: "cmd_completed", deviceId: request.deviceId, commandId: request.commandId, execMs: request.execMs });
- 
-saveState(); }
- 
-// ----------------------------- // TIMEOUT // ----------------------------- function scheduleTimeout(id) { const r = pendingRequests[id]; if (!r) return;
- 
-r._timeoutRef = setTimeout(() => handleTimeout(id), 2000); }
- 
-function handleTimeout(id) { const r = pendingRequests[id]; if (!r) return;
- 
-if (r.retries >= r.maxRetries) { delete pendingRequests[id];
- `if (r.broadcastId) {     updateBroadcast(r.broadcastId, r.deviceId, "FAILED");   }    sendToUI({     type: "cmd_failed",     deviceId: r.deviceId,     commandId: r.commandId   });    return;   ` 
+// -----------------------------
+// ACK
+// -----------------------------
+function handleAck(packet) {
+  const request = pendingRequests[packet.requestId];
+  if (!request) return;
+
+  clearTimeout(request._timeoutRef);
+
+  request.state = "COMPLETED";
+  request.execMs = packet.execMs || 0;
+
+  delete pendingRequests[packet.requestId];
+
+  console.log("✅ ACK:", packet.requestId);
+
+  if (request.broadcastId) {
+    updateBroadcast(request.broadcastId, request.deviceId, "OK");
+  }
+
+  sendToUI({
+    type: "cmd_completed",
+    deviceId: request.deviceId,
+    commandId: request.commandId,
+    execMs: request.execMs
+  });
+
+  saveState();
 }
- 
-r.retries++; sendPacket(registry.get(r.deviceId), r); scheduleTimeout(id); }
- 
-// ----------------------------- // BROADCAST // ----------------------------- function broadcastCommand(commandId, meta = {}) { const devices = registry.getAll(); const id = "bc_" + Math.random().toString(36).slice(2);
- 
-console.log("📡 BROADCAST START:", id);
- 
-broadcastRequests[id] = { broadcastId: id, commandId, devices: {}, status: "PENDING" };
- 
-devices.forEach(d => { broadcastRequests[id].devices[d.deviceId] = "PENDING"; dispatchCommand(d.deviceId, commandId, meta, id); });
- 
-saveState(); }
- 
-// ----------------------------- // SNAPSHOT // ----------------------------- setInterval(() => { sendToUI({ type: "snapshot", devices: registry.getAll(), metrics: metrics.snapshot(), broadcasts: broadcastRequests }); }, 2000);
- 
-// ----------------------------- loadState(); console.log("🚀 Gateway Phase 6 FINAL running");
+
+// -----------------------------
+// TIMEOUT
+// -----------------------------
+function scheduleTimeout(id) {
+  const r = pendingRequests[id];
+  if (!r) return;
+
+  r._timeoutRef = setTimeout(() => handleTimeout(id), 2000);
+}
+
+function handleTimeout(id) {
+  const r = pendingRequests[id];
+  if (!r) return;
+
+  if (r.retries >= r.maxRetries) {
+    delete pendingRequests[id];
+
+    if (r.broadcastId) {
+      updateBroadcast(r.broadcastId, r.deviceId, "FAILED");
+    }
+
+    sendToUI({
+      type: "cmd_failed",
+      deviceId: r.deviceId,
+      commandId: r.commandId
+    });
+
+    return;
+  }
+
+  r.retries++;
+  sendPacket(registry.get(r.deviceId), r);
+  scheduleTimeout(id);
+}
+
+// -----------------------------
+// BROADCAST UPDATE (مهم جدًا)
+// -----------------------------
+function updateBroadcast(broadcastId, deviceId, status) {
+  const bc = broadcastRequests[broadcastId];
+  if (!bc) return;
+
+  bc.devices[deviceId] = status;
+
+  const states = Object.values(bc.devices);
+
+  if (states.every(s => s === "OK")) {
+    bc.status = "COMPLETED";
+  } else if (states.every(s => s !== "PENDING")) {
+    bc.status = "PARTIAL";
+  }
+
+  if (bc.status !== "PENDING") {
+    console.log("📊 BROADCAST DONE:", broadcastId, "|", bc.status);
+
+    sendToUI({
+      type: "broadcast_done",
+      broadcastId,
+      status: bc.status,
+      devices: bc.devices
+    });
+  }
+
+  saveState();
+}
+
+// -----------------------------
+// BROADCAST
+// -----------------------------
+function broadcastCommand(commandId, meta = {}) {
+  const devices = registry.getAll();
+  const id = "bc_" + Math.random().toString(36).slice(2);
+
+  console.log("📡 BROADCAST START:", id);
+
+  broadcastRequests[id] = {
+    broadcastId: id,
+    commandId,
+    devices: {},
+    status: "PENDING"
+  };
+
+  devices.forEach(d => {
+    broadcastRequests[id].devices[d.deviceId] = "PENDING";
+    dispatchCommand(d.deviceId, commandId, meta, id);
+  });
+
+  saveState();
+}
+
+// -----------------------------
+// SNAPSHOT
+// -----------------------------
+setInterval(() => {
+  sendToUI({
+    type: "snapshot",
+    devices: registry.getAll(),
+    metrics: metrics.snapshot(),
+    broadcasts: broadcastRequests
+  });
+}, 2000);
+
+// -----------------------------
+loadState();
+console.log("🚀 Gateway Phase 6 FINAL running");

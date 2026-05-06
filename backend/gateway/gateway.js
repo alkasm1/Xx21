@@ -18,7 +18,7 @@ const SECRET = "alm_shared_secret";
 const STATE_FILE = "./state.json";
 
 // -----------------------------
-// WebSocket + sendToUI (يجب أن يكون هنا)
+// WebSocket + sendToUI
 // -----------------------------
 const wss = new WebSocket.Server({ port: 5001 });
 
@@ -43,25 +43,6 @@ wss.on("connection", ws => {
     }
   });
 });
-
-const dgram = require("dgram");
-const fs = require("fs");
-const crypto = require("crypto");
-const udp = dgram.createSocket("udp4");
-const WebSocket = require("ws");
-const { Client } = require("ssh2");
-
-const eventBus = require("./event_bus");
-const registry = require("./device_registry");
-const Metrics = require("./metrics");
-
-const metrics = new Metrics(eventBus, registry);
-
-// -----------------------------
-// CONFIG
-// -----------------------------
-const SECRET = "alm_shared_secret";
-const STATE_FILE = "./state.json";
 
 // -----------------------------
 // Security
@@ -140,7 +121,7 @@ function loadState() {
 }
 
 // -----------------------------
-// SSH EXECUTION (FIXED)
+// SSH EXECUTION
 // -----------------------------
 function execSSH(device, command) {
   return new Promise((resolve, reject) => {
@@ -182,8 +163,11 @@ function execSSH(device, command) {
 }
 
 // -----------------------------
-// DISPATCH (FIXED)
+// DISPATCH
 // -----------------------------
+function genId() {
+  return "req_" + Math.random().toString(36).slice(2);
+}
 
 function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
   const device = registry.get(deviceId);
@@ -211,50 +195,9 @@ function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
   scheduleTimeout(request.requestId);
 }
 
-
-  // UDP fallback
-  sendPacket(device, request);
-  scheduleTimeout(request.requestId);
-}
-function execSSH(device, command) {
-  return new Promise((resolve, reject) => {
-    const conn = new Client();
-    const start = Date.now();
-
-    let timeoutRef = setTimeout(() => {
-      conn.end();
-      reject(new Error("SSH timeout"));
-    }, 6000);
-
-    conn.on("ready", () => {
-      conn.exec(command, (err, stream) => {
-        if (err) {
-          clearTimeout(timeoutRef);
-          return reject(err);
-        }
-
-        stream.on("close", () => {
-          clearTimeout(timeoutRef);
-          conn.end();
-          resolve({ execMs: Date.now() - start });
-        });
-      });
-    });
-
-    conn.on("error", err => {
-      clearTimeout(timeoutRef);
-      reject(err);
-    });
-
-    conn.connect({
-      host: device.ip,
-      port: device.port || 22,
-      username: device.username,
-      password: device.password
-    });
-  });
-}
-
+// -----------------------------
+// SSH HANDLER
+// -----------------------------
 async function handleSSH(request, device) {
   let cmd = "reboot";
 
@@ -393,7 +336,6 @@ function scheduleTimeout(id) {
   const device = registry.get(r.deviceId);
   if (!device) return;
 
-  // SSH لا يستخدم timeout
   if (device.method === "ssh") return;
 
   r._timeoutRef = setTimeout(() => handleTimeout(id), 2000);
@@ -406,7 +348,6 @@ function handleTimeout(id) {
   const device = registry.get(r.deviceId);
   if (!device) return;
 
-  // SSH لا يعيد الإرسال
   if (device.method === "ssh") {
     delete pendingRequests[id];
 
@@ -424,7 +365,6 @@ function handleTimeout(id) {
     return;
   }
 
-  // UDP RETRY
   if (r.retries >= r.maxRetries) {
     delete pendingRequests[id];
 

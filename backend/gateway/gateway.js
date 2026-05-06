@@ -3,7 +3,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const udp = dgram.createSocket("udp4");
 const WebSocket = require("ws");
-const { Client } = require("ssh2"); // 🔥 NEW
+const { Client } = require("ssh2");
 
 const eventBus = require("./event_bus");
 const registry = require("./device_registry");
@@ -22,11 +22,7 @@ const STATE_FILE = "./state.json";
 // -----------------------------
 function stableStringify(obj) {
   if (obj === null || typeof obj !== "object") return JSON.stringify(obj);
-
-  if (Array.isArray(obj)) {
-    return "[" + obj.map(stableStringify).join(",") + "]";
-  }
-
+  if (Array.isArray(obj)) return "[" + obj.map(stableStringify).join(",") + "]";
   return (
     "{" +
     Object.keys(obj)
@@ -61,7 +57,6 @@ function genNonce() {
 let pendingRequests = {};
 let broadcastRequests = {};
 
-// -----------------------------
 function serializeRequests(obj) {
   const clean = {};
   for (const id in obj) {
@@ -92,125 +87,135 @@ function saveState() {
 
 function loadState() {
   if (!fs.existsSync(STATE_FILE)) return;
-
   const state = JSON.parse(fs.readFileSync(STATE_FILE));
   pendingRequests = state.pendingRequests || {};
   broadcastRequests = state.broadcastRequests || {};
-
   console.log("♻️ State restored");
 }
 
 // -----------------------------
-// QUEUE
+// SSH EXECUTION (FIXED)
 // -----------------------------
-let commandQueue = [];
-let isProcessing = false;
+function execSSH(device, command) {
+  return new Promise((resolve, reject) => {
+    const conn = new Client();
+    const start = Date.now();
 
-function enqueue(fn, priority = 0, delay = 0) {
-  commandQueue.push({
-    fn,
-    priority,
-    executeAt: Date.now() + delay
+    let timeoutRef = setTimeout(() => {
+      conn.end();
+      reject(new Error("SSH timeout"));
+    }, 6000);
+
+    conn.on("ready", () => {
+      conn.exec(command, (err, stream) => {
+        if (err) {
+          clearTimeout(timeoutRef);
+          return reject(err);
+        }
+
+        stream.on("close", () => {
+          clearTimeout(timeoutRef);
+          conn.end();
+          resolve({ execMs: Date.now() - start });
+        });
+      });
+    });
+
+    conn.on("error", err => {
+      clearTimeout(timeoutRef);
+      reject(err);
+    });
+
+    conn.connect({
+      host: device.ip,
+      port: device.port || 22,
+      username: device.username,
+      password: device.password
+    });
   });
-
-  commandQueue.sort((a, b) => b.priority - a.priority);
-  processQueue();
-}
-
-function processQueue() {
-  if (isProcessing) return;
-  isProcessing = true;
-
-  const loop = () => {
-    if (commandQueue.length === 0) {
-      isProcessing = false;
-      return;
-    }
-
-    const job = commandQueue[0];
-    const now = Date.now();
-
-    if (job.executeAt > now) {
-      setTimeout(loop, job.executeAt - now);
-      return;
-    }
-
-    commandQueue.shift();
-
-    try {
-      job.fn();
-    } catch (e) {
-      console.error("Queue error:", e);
-    }
-
-    setImmediate(loop);
-  };
-
-  loop();
 }
 
 // -----------------------------
-// RATE LIMIT
-// -----------------------------
-const RATE_LIMIT = 20;
-let tokens = RATE_LIMIT;
-let lastRefill = Date.now();
-
-function refill() {
-  const now = Date.now();
-  const delta = (now - lastRefill) / 1000;
-
-  tokens += delta * RATE_LIMIT;
-  if (tokens > RATE_LIMIT) tokens = RATE_LIMIT;
-
-  lastRefill = now;
-}
-
-function canSend() {
-  refill();
-  if (tokens >= 1) {
-    tokens--;
-    return true;
-  }
-  return false;
-}
-
+// DISPATCH (FIXED)
 // -----------------------------
 function genId() {
   return "req_" + Math.random().toString(36).slice(2);
 }
 
-// -----------------------------
-// WebSocket
-// -----------------------------
-const wss = new WebSocket.Server({ port: 5001 });
+function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
+  const device = registry.get(deviceId);
+  if (!device) return;
 
-function sendToUI(obj) {
-  wss.clients.forEach(ws => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(obj));
-    }
-  });
+  const request = {
+    requestId: genId(),
+    deviceId,
+    commandId,
+    meta,
+    retries: 0,
+    maxRetries: 0, // SSH لا يحتاج retries
+    state: "PENDING",
+    broadcastId
+  };
+
+  pendingRequests[request.requestId] = request;
+
+  // 🔥 SSH PATH
+  if (device.method === "ssh") {
+    handleSSH(request, device);
+    return;
+  }
+
+  // UDP fallback
+  sendPacket(device, request);
+  scheduleTimeout(request.requestId);
 }
 
-wss.on("connection", ws => {
-  ws.on("message", msg => {
-    const data = JSON.parse(msg.toString());
+// -----------------------------
+// SSH HANDLER (FIXED)
+// -----------------------------
+async function handleSSH(request, device) {
+  let cmd = "reboot";
 
-    if (data.type === "ui.command") {
-      enqueue(() => {
-        dispatchCommand(data.deviceId, data.commandId, data.params);
-      });
+  if (request.commandId === 17) {
+    cmd = "uname -a"; // لاحقًا نضع MikroTik profile
+  }
+
+  try {
+    const res = await execSSH(device, cmd);
+
+    console.log("✅ SSH OK:", request.deviceId);
+
+    delete pendingRequests[request.requestId];
+    saveState();
+
+    if (request.broadcastId) {
+      updateBroadcast(request.broadcastId, request.deviceId, "OK");
     }
 
-    if (data.type === "ui.broadcast") {
-      enqueue(() => {
-        broadcastCommand(data.commandId, data.params);
-      });
-    }
-  });
-});
+    sendToUI({
+      type: "cmd_completed",
+      deviceId: request.deviceId,
+      commandId: request.commandId,
+      execMs: res.execMs
+    });
 
+  } catch (err) {
+    console.log("❌ SSH FAIL:", err.message);
+
+    delete pendingRequests[request.requestId];
+    saveState();
+
+    if (request.broadcastId) {
+      updateBroadcast(request.broadcastId, request.deviceId, "FAILED");
+    }
+
+    sendToUI({
+      type: "cmd_failed",
+      deviceId: request.deviceId,
+      commandId: request.commandId
+    });
+  }
+}
 // -----------------------------
 // UDP LISTENER
 // -----------------------------
@@ -246,108 +251,27 @@ udp.on("message", (msg, rinfo) => {
 udp.bind(5000);
 
 // -----------------------------
-// SSH EXECUTION 🔥
+// SEND PACKET (UDP ONLY)
 // -----------------------------
-function execSSH(device, command) {
-  return new Promise((resolve, reject) => {
-    const conn = new Client();
-    const start = Date.now();
-
-    conn.on("ready", () => {
-      conn.exec(command, (err, stream) => {
-        if (err) return reject(err);
-
-        stream.on("close", () => {
-          conn.end();
-          resolve({ execMs: Date.now() - start });
-        });
-      });
-    });
-
-    conn.on("error", reject);
-
-    conn.connect({
-      host: device.ip,
-      port: device.port || 22,
-      username: device.username,
-      password: device.password
-    });
-  });
-}
-
-// -----------------------------
-// DISPATCH (UPDATED)
-// -----------------------------
-function dispatchCommand(deviceId, commandId, meta = {}, broadcastId = null) {
-  const device = registry.get(deviceId);
-  if (!device) return;
-
-  const request = {
-    requestId: genId(),
-    deviceId,
-    commandId,
-    meta,
-    retries: 0,
-    maxRetries: 3,
-    state: "PENDING",
-    broadcastId
+function sendPacket(device, request) {
+  const packet = {
+    type: "cmd",
+    requestId: request.requestId,
+    deviceId: request.deviceId,
+    commandId: request.commandId,
+    meta: request.meta,
+    nonce: genNonce()
   };
 
-  pendingRequests[request.requestId] = request;
+  packet.sig = signPacket(packet);
 
-  // 🔥 SSH PATH
-  if (device.method === "ssh") {
-    handleSSH(request, device);
-    return;
-  }
+  const buf = Buffer.from(JSON.stringify(packet));
 
-  // UDP fallback
-  sendPacket(device, request);
-  scheduleTimeout(request.requestId);
+  udp.send(buf, 0, buf.length, device.port, device.ip);
 }
 
 // -----------------------------
-// SSH HANDLER 🔥
-// -----------------------------
-async function handleSSH(request, device) {
-  let cmd = "reboot";
-
-  if (request.commandId === 17) {
-    cmd = "uname -a";
-  }
-
-  try {
-    const res = await execSSH(device, cmd);
-
-    console.log("✅ SSH OK:", request.deviceId);
-
-    if (request.broadcastId) {
-      updateBroadcast(request.broadcastId, request.deviceId, "OK");
-    }
-
-    sendToUI({
-      type: "cmd_completed",
-      deviceId: request.deviceId,
-      commandId: request.commandId,
-      execMs: res.execMs
-    });
-
-  } catch (err) {
-    console.log("❌ SSH FAIL:", err.message);
-
-    if (request.broadcastId) {
-      updateBroadcast(request.broadcastId, request.deviceId, "FAILED");
-    }
-
-    sendToUI({
-      type: "cmd_failed",
-      deviceId: request.deviceId,
-      commandId: request.commandId
-    });
-  }
-}
-// -----------------------------
-// ACK
+// ACK HANDLER (UDP ONLY)
 // -----------------------------
 function handleAck(packet) {
   const request = pendingRequests[packet.requestId];
@@ -377,11 +301,17 @@ function handleAck(packet) {
 }
 
 // -----------------------------
-// TIMEOUT
+// TIMEOUT (UDP ONLY)
 // -----------------------------
 function scheduleTimeout(id) {
   const r = pendingRequests[id];
   if (!r) return;
+
+  const device = registry.get(r.deviceId);
+  if (!device) return;
+
+  // SSH لا يستخدم timeout
+  if (device.method === "ssh") return;
 
   r._timeoutRef = setTimeout(() => handleTimeout(id), 2000);
 }
@@ -390,6 +320,28 @@ function handleTimeout(id) {
   const r = pendingRequests[id];
   if (!r) return;
 
+  const device = registry.get(r.deviceId);
+  if (!device) return;
+
+  // SSH لا يعيد الإرسال
+  if (device.method === "ssh") {
+    delete pendingRequests[id];
+
+    if (r.broadcastId) {
+      updateBroadcast(r.broadcastId, r.deviceId, "FAILED");
+    }
+
+    sendToUI({
+      type: "cmd_failed",
+      deviceId: r.deviceId,
+      commandId: r.commandId
+    });
+
+    saveState();
+    return;
+  }
+
+  // UDP RETRY
   if (r.retries >= r.maxRetries) {
     delete pendingRequests[id];
 
@@ -403,16 +355,17 @@ function handleTimeout(id) {
       commandId: r.commandId
     });
 
+    saveState();
     return;
   }
 
   r.retries++;
-  sendPacket(registry.get(r.deviceId), r);
+  sendPacket(device, r);
   scheduleTimeout(id);
 }
 
 // -----------------------------
-// BROADCAST UPDATE (مهم جدًا)
+// BROADCAST UPDATE
 // -----------------------------
 function updateBroadcast(broadcastId, deviceId, status) {
   const bc = broadcastRequests[broadcastId];
